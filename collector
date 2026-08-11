@@ -1,0 +1,258 @@
+import datetime
+import sqlite3
+import pandas as pd
+import tushare as ts
+import akshare as ak
+from apscheduler.schedulers.blocking import BlockingScheduler
+
+# ==================== 全局配置 ====================
+DB_PATH = "market_data.db"
+TUSHARE_TOKEN = "3e2b532cd5ed5f195ff088fd4dd38e260e5c00c5e4cf4acdacde7a3c"
+
+
+# ==================== 数据库初始化 ====================
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # 1. 历史成交额表
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS market_turnover_history (
+        trade_date TEXT PRIMARY KEY,
+        total_amount REAL,
+        sh_amount REAL,
+        sz_amount REAL,
+        cyb_amount REAL,
+        kc50_amount REAL,
+        hl_amount REAL,
+        wind_micro_amount REAL,
+        updated_at TEXT
+    );
+    """)
+
+    # 2. 指数 K 线通用历史表（用于常规指数 K 线图）
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS index_kline_history (
+        index_code TEXT,
+        trade_date TEXT,
+        open REAL,
+        high REAL,
+        low REAL,
+        close REAL,
+        volume REAL,
+        amount REAL,
+        PRIMARY KEY (index_code, trade_date)
+    );
+    """)
+
+    # 3. 涨跌停股票明细表
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS limit_stocks (
+        trade_date TEXT,
+        stock_code TEXT,
+        stock_name TEXT,
+        last_price REAL,
+        change_pct REAL,
+        limit_type TEXT,
+        status INTEGER,
+        industry TEXT,
+        first_limit_time TEXT,
+        limit_num INTEGER,
+        updated_at TEXT,
+        PRIMARY KEY (trade_date, stock_code, limit_type)
+    );
+    """)
+
+    # 4. 两融余额历史表
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS margin_history (
+        trade_date TEXT PRIMARY KEY,
+        rzrqye REAL,
+        updated_at TEXT
+    );
+    """)
+
+    conn.commit()
+    conn.close()
+    print("✅ [系统] 主数据库及数据表初始化完成！")
+
+
+# ==================== 核心指数及成交额同步 ====================
+def sync_history_turnover():
+    print("\n🚀 [历史归档] 正在同步核心指数成交额及常规 K 线...")
+    try:
+        ts.set_token(TUSHARE_TOKEN)
+        pro = ts.pro_api()
+        start_dt = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y%m%d')
+
+        df_sh = pro.index_daily(ts_code='000001.SH', start_date=start_dt)
+        df_sz = pro.index_daily(ts_code='399107.SZ', start_date=start_dt)
+        df_cyb = pro.index_daily(ts_code='399102.SZ', start_date=start_dt)
+        df_kc50 = pro.index_daily(ts_code='000688.SH', start_date=start_dt)
+        df_hl = pro.index_daily(ts_code='000015.SH', start_date=start_dt)
+
+        def process_df(df, prefix):
+            if df is None or df.empty:
+                return pd.DataFrame(columns=['trade_date', f'{prefix}_amount'])
+            df = df[['trade_date', 'amount', 'open', 'high', 'low', 'close', 'vol']].copy()
+            df['trade_date'] = df['trade_date'].astype(str)
+            df[f'{prefix}_amount'] = (df['amount'] / 100000.0).round(2)
+            return df
+
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        index_mapping = {
+            '000001.SH': df_sh,
+            '399102.SZ': df_cyb,
+            '000688.SH': df_kc50,
+            '000015.SH': df_hl
+        }
+
+        for code, df_raw in index_mapping.items():
+            if df_raw is not None and not df_raw.empty:
+                for _, row in df_raw.iterrows():
+                    t_date = str(row['trade_date'])
+                    formatted_date = f"{t_date[:4]}-{t_date[4:6]}-{t_date[6:]}" if len(t_date) == 8 else t_date
+                    cursor.execute("""
+                        INSERT INTO index_kline_history (index_code, trade_date, open, high, low, close, volume, amount)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(index_code, trade_date) DO UPDATE SET
+                            open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close, volume=excluded.volume, amount=excluded.amount
+                    """, (
+                        code, formatted_date, float(row.get('open', 0)), float(row.get('high', 0)),
+                        float(row.get('low', 0)), float(row.get('close', 0)), float(row.get('vol', 0)), float(row.get('amount', 0))
+                    ))
+
+        d_sh = process_df(df_sh, 'sh')
+        d_sz = process_df(df_sz, 'sz')
+        d_cyb = process_df(df_cyb, 'cyb')
+        d_kc50 = process_df(df_kc50, 'kc50')
+        d_hl = process_df(df_hl, 'hl')
+
+        df_all = pd.merge(d_sh[['trade_date', 'sh_amount']], d_sz[['trade_date', 'sz_amount']], on='trade_date', how='outer')
+        df_all = pd.merge(df_all, d_cyb[['trade_date', 'cyb_amount']], on='trade_date', how='outer')
+        df_all = pd.merge(df_all, d_kc50[['trade_date', 'kc50_amount']], on='trade_date', how='outer')
+        df_all = pd.merge(df_all, d_hl[['trade_date', 'hl_amount']], on='trade_date', how='outer')
+
+        for col in ['sh_amount', 'sz_amount', 'cyb_amount', 'kc50_amount', 'hl_amount']:
+            df_all[col] = df_all[col].fillna(0.0)
+
+        df_all['total_amount'] = (df_all['sh_amount'] + df_all['sz_amount']).round(2)
+        df_all['trade_date'] = pd.to_datetime(df_all['trade_date']).dt.strftime('%Y-%m-%d')
+
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for _, row in df_all.iterrows():
+            cursor.execute("""
+            INSERT INTO market_turnover_history 
+            (trade_date, total_amount, sh_amount, sz_amount, cyb_amount, kc50_amount, hl_amount, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(trade_date) DO UPDATE SET
+                total_amount=excluded.total_amount,
+                sh_amount=excluded.sh_amount,
+                sz_amount=excluded.sz_amount,
+                cyb_amount=excluded.cyb_amount,
+                kc50_amount=excluded.kc50_amount,
+                hl_amount=excluded.hl_amount,
+                updated_at=excluded.updated_at
+            """, (
+                row['trade_date'], row['total_amount'], row['sh_amount'],
+                row['sz_amount'], row['cyb_amount'], row['kc50_amount'],
+                row['hl_amount'], now_str
+            ))
+
+        conn.commit()
+        conn.close()
+        print("🎉 [历史归档] 常规指数及成交额同步成功！")
+    except Exception as e:
+        print(f"❌ [历史归档] 同步失败: {e}")
+
+
+def sync_margin_history():
+    print("\n🚀 [两融归档] 正在同步两融余额...")
+    try:
+        ts.set_token(TUSHARE_TOKEN)
+        pro = ts.pro_api()
+        start_dt = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y%m%d')
+        df_margin = pro.margin(start_date=start_dt, end_date=datetime.datetime.now().strftime('%Y%m%d'))
+        if df_margin is None or df_margin.empty: return
+
+        df_margin['rzrqye'] = pd.to_numeric(df_margin['rzrqye'], errors='coerce').fillna(0.0)
+        df_margin['trade_date'] = pd.to_datetime(df_margin['trade_date'].astype(str)).dt.strftime('%Y-%m-%d')
+        df_grouped = df_margin.groupby('trade_date')['rzrqye'].sum().reset_index()
+        df_grouped['rzrqye'] = (df_grouped['rzrqye'] / 1e8).round(2)
+
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for _, row in df_grouped.iterrows():
+            cursor.execute("""
+            INSERT INTO margin_history (trade_date, rzrqye, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(trade_date) DO UPDATE SET rzrqye=excluded.rzrqye, updated_at=excluded.updated_at
+            """, (row['trade_date'], row['rzrqye'], now_str))
+        conn.commit()
+        conn.close()
+        print("🎉 [两融归档] 两融余额同步成功！")
+    except Exception as e:
+        print(f"❌ [两融归档] 失败: {e}")
+
+
+def fetch_and_save_limit_stocks(limit_type="limit_up"):
+    today_dt = datetime.datetime.now()
+    today_fmt = today_dt.strftime("%Y-%m-%d")
+    now_str = today_dt.strftime("%Y-%m-%d %H:%M:%S")
+    target_date_str = today_fmt.replace("-", "")
+    try:
+        df = ak.stock_zt_pool_em(date=target_date_str) if limit_type == "limit_up" else ak.stock_zt_pool_dtgc_em(date=target_date_str)
+    except Exception:
+        try:
+            df = ak.stock_zt_pool_em(date=target_date_str) if limit_type == "limit_up" else ak.stock_dt_pool_em(date=target_date_str)
+        except Exception:
+            return 0
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM limit_stocks WHERE trade_date = ? AND limit_type = ?", (today_fmt, limit_type))
+
+    if df is None or df.empty:
+        conn.commit()
+        conn.close()
+        return 0
+
+    count = 0
+    for _, row in df.iterrows():
+        cursor.execute("""
+        INSERT INTO limit_stocks (trade_date, stock_code, stock_name, last_price, change_pct, limit_type, status, industry, first_limit_time, limit_num, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            today_fmt, str(row.get("代码", "")), str(row.get("名称", "")),
+            float(row.get("最新价", 0.0) or 0.0), float(row.get("涨跌幅", 0.0) or 0.0),
+            limit_type, 1, str(row.get("所属行业", "")),
+            str(row.get("首次封板时间", row.get("最后封板时间", ""))), int(row.get("连板数", 1) or 1), now_str
+        ))
+        count += 1
+    conn.commit()
+    conn.close()
+    return count
+
+
+def realtime_5min_job():
+    fetch_and_save_limit_stocks("limit_up")
+    fetch_and_save_limit_stocks("limit_down")
+
+
+def start_scheduler():
+    scheduler = BlockingScheduler()
+    scheduler.add_job(realtime_5min_job, "cron", day_of_week="mon-fri", hour="9-15", minute="*/5")
+    scheduler.add_job(sync_history_turnover, "cron", day_of_week="mon-fri", hour="9-22", minute="0")
+    scheduler.add_job(sync_margin_history, "cron", hour="9,22", minute="0")
+    scheduler.start()
+
+
+if __name__ == "__main__":
+    init_db()
+    sync_margin_history()
+    sync_history_turnover()
+    realtime_5min_job()
+    start_scheduler()
