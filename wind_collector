@@ -1,0 +1,141 @@
+import datetime
+import sqlite3
+import requests
+from apscheduler.schedulers.blocking import BlockingScheduler
+
+DB_PATH = "market_data.db"
+WIND_URL = "https://indexapi.wind.com.cn/indicesWebsite/api/Kline"
+MAX_VALID_VAL = 1e12
+
+
+def fetch_and_sync_wind_full_kline():
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n⏰ [{now_str}] 开始执行万得微盘股增量数据轮询任务...")
+
+    params = {
+        "indexId": "1a073179a3f0bebf923a0259cee963e4",
+        "period": "1Y",
+        "lan": "cn",
+    }
+
+    headers = {
+        "accept": "application/json",
+        "accept-language": "zh-CN,zh;q=0.9",
+        "cache-control": "no-cache",
+        "content-type": "application/x-www-form-urlencoded",
+        "origin": "https://www.windindices.com",
+        "pragma": "no-cache",
+        "priority": "u=1, i",
+        "referer": "https://www.windindices.com/",
+        "sec-ch-ua": '"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"macOS"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-storage-access": "active",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+    }
+
+    try:
+        res = requests.get(WIND_URL, params=params, headers=headers, timeout=10)
+        res.raise_for_status()
+        data = res.json()
+
+        data_list = []
+        if isinstance(data, dict):
+            result_dict = data.get("Result") or data.get("result") or {}
+            if isinstance(result_dict, dict):
+                data_list = result_dict.get("data") or result_dict.get("list") or []
+            elif isinstance(result_dict, list):
+                data_list = result_dict
+            if not data_list:
+                data_list = data.get("data", [])
+
+        if not data_list:
+            print(f"⚠️ [{now_str}] 接口未返回数据")
+            return
+
+        parsed_records = []
+        discarded_count = 0
+
+        for item in data_list:
+            date_str = str(item.get("tradeDate") or item.get("date") or item.get("time") or item.get("t", ""))
+            if " " in date_str:
+                date_str = date_str.split(" ")[0]
+            if len(date_str) == 8 and date_str.isdigit():
+                date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+
+            raw_open = float(item.get("open") or item.get("o") or 0.0)
+            raw_close = float(item.get("close") or item.get("c") or item.get("price") or 0.0)
+            raw_amount = float(item.get("amount") or item.get("turnover") or item.get("val") or 0.0)
+
+            if raw_open >= MAX_VALID_VAL or raw_close >= MAX_VALID_VAL or raw_amount >= MAX_VALID_VAL:
+                discarded_count += 1
+                continue
+
+            open_p = raw_open
+            high_p = float(item.get("high") or item.get("h") or item.get("maxPrice") or 0.0)
+            low_p = float(item.get("low") or item.get("l") or item.get("minPrice") or 0.0)
+            close_p = raw_close
+            vol = float(item.get("volume") or item.get("vol") or item.get("v") or 0.0)
+            amount_yi = round(raw_amount / 1e8, 2) if raw_amount > 0 else 0.0
+
+            if date_str:
+                parsed_records.append({
+                    "trade_date": date_str, "open": open_p, "high": high_p,
+                    "low": low_p, "close": close_p, "volume": vol, "amount_yi": amount_yi
+                })
+
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS wind_kline_history (
+                trade_date TEXT PRIMARY KEY,
+                open REAL, high REAL, low REAL, close REAL, volume REAL, amount_yi REAL
+            )
+        """)
+
+        for rec in parsed_records:
+            cursor.execute("""
+                INSERT INTO wind_kline_history (trade_date, open, high, low, close, volume, amount_yi)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trade_date) DO UPDATE SET
+                    open = excluded.open, high = excluded.high, low = excluded.low,
+                    close = excluded.close, volume = excluded.volume, amount_yi = excluded.amount_yi
+            """, (
+                rec["trade_date"], rec["open"], rec["high"],
+                rec["low"], rec["close"], rec["volume"], rec["amount_yi"]
+            ))
+
+            cursor.execute("""
+                INSERT INTO market_turnover_history (trade_date, wind_micro_amount)
+                VALUES (?, ?)
+                ON CONFLICT(trade_date) DO UPDATE SET
+                    wind_micro_amount = excluded.wind_micro_amount
+            """, (rec["trade_date"], rec["amount_yi"]))
+
+        conn.commit()
+        conn.close()
+
+        latest_date = parsed_records[-1]["trade_date"] if parsed_records else "无"
+        print(f"✅ [{now_str}] 轮询成功！同步 {len(parsed_records)} 条记录（最新日期: {latest_date}），过滤异常 {discarded_count} 条。")
+
+    except Exception as e:
+        print(f"❌ [{now_str}] 轮询异常: {e}")
+
+
+def start_hourly_scheduler():
+    scheduler = BlockingScheduler()
+    scheduler.add_job(fetch_and_sync_wind_full_kline, "cron", hour="*", minute="0")
+    print("🚀 万得微盘股每小时定时轮询服务已启动！")
+    fetch_and_sync_wind_full_kline()
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        print("\n🛑 万得轮询服务已停止。")
+
+
+if __name__ == "__main__":
+    start_hourly_scheduler()
