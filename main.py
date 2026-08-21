@@ -276,6 +276,45 @@ def get_index_kline(code: str = "000001.SH", days: int = 365):
     return {"code": code, "list": kline_list}
 
 
+@app.get("/api/macro/us-treasury-yields")
+def get_us_treasury_yields(days: int = 3650):
+    """返回美国 10 年期和 30 年期国债收益率，用于宏观经济看板。"""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 让 API 在采集服务首次启动前也能安全返回空列表。
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS us_treasury_yield_history (
+            trade_date TEXT PRIMARY KEY,
+            y10 REAL,
+            y30 REAL,
+            updated_at TEXT
+        )
+    """)
+
+    cursor.execute("""
+        SELECT trade_date, y10, y30
+        FROM us_treasury_yield_history
+        WHERE y10 IS NOT NULL OR y30 IS NOT NULL
+        ORDER BY trade_date DESC
+        LIMIT ?
+    """, (days,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    rows.reverse()
+    return {
+        "list": [
+            {
+                "trade_date": row["trade_date"],
+                "y10": safe_float(row["y10"]),
+                "y30": safe_float(row["y30"]),
+            }
+            for row in rows
+        ]
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 
