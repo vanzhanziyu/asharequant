@@ -75,7 +75,8 @@ def fetch_and_sync_wind_full_kline():
                 continue
 
             open_p = raw_open
-            high_p = float(item.get("high") or item.get("h") or item.get("maxPrice") or 0.0)
+            # 兼容 Wind 网页接口实际返回的拼写错误字段 "hight"
+            high_p = float(item.get("high") or item.get("hight") or item.get("h") or item.get("maxPrice") or 0.0)
             low_p = float(item.get("low") or item.get("l") or item.get("minPrice") or 0.0)
             close_p = raw_close
             vol = float(item.get("volume") or item.get("vol") or item.get("v") or 0.0)
@@ -86,6 +87,9 @@ def fetch_and_sync_wind_full_kline():
                     "trade_date": date_str, "open": open_p, "high": high_p,
                     "low": low_p, "close": close_p, "volume": vol, "amount_yi": amount_yi
                 })
+
+        # 按交易日升序排序，确保时间序列正确
+        parsed_records.sort(key=lambda x: x["trade_date"])
 
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
