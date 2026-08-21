@@ -72,6 +72,16 @@ def init_db():
     );
     """)
 
+    # 5. 美国国债收益率曲线（宏观看板）
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS us_treasury_yield_history (
+        trade_date TEXT PRIMARY KEY,
+        y10 REAL,
+        y30 REAL,
+        updated_at TEXT
+    );
+    """)
+
     conn.commit()
     conn.close()
     print("✅ [系统] 主数据库及数据表初始化完成！")
@@ -198,6 +208,74 @@ def sync_margin_history():
         print(f"❌ [两融归档] 失败: {e}")
 
 
+def sync_us_treasury_yield_history(years=10):
+    """按年度分段同步美国 10 年期和 30 年期国债收益率。"""
+    print(f"\n🚀 [宏观归档] 正在同步近 {years} 年美国国债收益率...")
+    try:
+        ts.set_token(TUSHARE_TOKEN)
+        pro = ts.pro_api()
+
+        end_dt = pd.Timestamp.today().normalize()
+        current_start = end_dt - pd.DateOffset(years=years)
+        records = []
+
+        # us_tycr 单次最多返回 2000 行；逐年拉取可避免触及上限。
+        while current_start <= end_dt:
+            current_end = min(
+                current_start + pd.DateOffset(years=1) - pd.Timedelta(days=1),
+                end_dt,
+            )
+            df_part = pro.us_tycr(
+                start_date=current_start.strftime("%Y%m%d"),
+                end_date=current_end.strftime("%Y%m%d"),
+                fields="date,y10,y30",
+            )
+
+            if df_part is not None and not df_part.empty:
+                records.append(df_part)
+
+            current_start = current_end + pd.Timedelta(days=1)
+
+        if not records:
+            print("⚠️ [宏观归档] 未获取到美国国债收益率数据")
+            return
+
+        df = pd.concat(records, ignore_index=True)
+        df["trade_date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d").dt.strftime("%Y-%m-%d")
+        df["y10"] = pd.to_numeric(df["y10"], errors="coerce")
+        df["y30"] = pd.to_numeric(df["y30"], errors="coerce")
+        df = (
+            df.dropna(subset=["trade_date"])
+            .drop_duplicates(subset=["trade_date"], keep="last")
+            .sort_values("trade_date")
+        )
+
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        for _, row in df.iterrows():
+            cursor.execute("""
+                INSERT INTO us_treasury_yield_history (trade_date, y10, y30, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(trade_date) DO UPDATE SET
+                    y10 = excluded.y10,
+                    y30 = excluded.y30,
+                    updated_at = excluded.updated_at
+            """, (
+                row["trade_date"],
+                float(row["y10"]) if pd.notna(row["y10"]) else None,
+                float(row["y30"]) if pd.notna(row["y30"]) else None,
+                now_str,
+            ))
+
+        conn.commit()
+        conn.close()
+        print(f"🎉 [宏观归档] 美国国债收益率同步成功，共 {len(df)} 条记录！")
+    except Exception as e:
+        print(f"❌ [宏观归档] 美国国债收益率同步失败: {e}")
+
+
 def fetch_and_save_limit_stocks(limit_type="limit_up"):
     today_dt = datetime.datetime.now()
     today_fmt = today_dt.strftime("%Y-%m-%d")
@@ -247,6 +325,7 @@ def start_scheduler():
     scheduler.add_job(realtime_5min_job, "cron", day_of_week="mon-fri", hour="9-15", minute="*/5")
     scheduler.add_job(sync_history_turnover, "cron", day_of_week="mon-fri", hour="9-22", minute="0")
     scheduler.add_job(sync_margin_history, "cron", hour="9,22", minute="0")
+    scheduler.add_job(sync_us_treasury_yield_history, "cron", day_of_week="mon-fri", hour="23", minute="0", kwargs={"years": 1})
     scheduler.start()
 
 
@@ -254,5 +333,6 @@ if __name__ == "__main__":
     init_db()
     sync_margin_history()
     sync_history_turnover()
+    sync_us_treasury_yield_history()
     realtime_5min_job()
     start_scheduler()
