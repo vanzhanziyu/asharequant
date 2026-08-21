@@ -37,7 +37,8 @@ def safe_float(val, default=0.0):
 def get_margin():
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT trade_date, rzrqye FROM margin_history ORDER BY trade_date ASC")
+    # 同样过滤掉可能存在的空数据，取有效余额
+    cursor.execute("SELECT trade_date, rzrqye FROM margin_history WHERE rzrqye IS NOT NULL ORDER BY trade_date ASC")
     rows = cursor.fetchall()
     conn.close()
     return [{"trade_date": r["trade_date"], "rzrqye": safe_float(r["rzrqye"])} for r in rows]
@@ -47,39 +48,82 @@ def get_margin():
 def get_turnover_overview():
     conn = get_db()
     cursor = conn.cursor()
+
     cursor.execute("PRAGMA table_info(market_turnover_history)")
     columns = [col[1] for col in cursor.fetchall()]
     has_wind = "wind_micro_amount" in columns
 
     select_fields = "trade_date, total_amount, sh_amount, sz_amount, cyb_amount, kc50_amount, hl_amount"
-    if has_wind: select_fields += ", wind_micro_amount"
+    if has_wind:
+        select_fields += ", wind_micro_amount"
 
-    cursor.execute(f"SELECT {select_fields} FROM market_turnover_history ORDER BY trade_date DESC LIMIT 10")
+    # 【修复核心】WHERE total_amount IS NOT NULL 自动跳过未填充数据的日期
+    cursor.execute(f"""
+        SELECT {select_fields}
+        FROM market_turnover_history 
+        WHERE total_amount IS NOT NULL
+        ORDER BY trade_date DESC LIMIT 10
+    """)
     rows = cursor.fetchall()
+
+    wind_rows = []
+    if has_wind:
+        cursor.execute("""
+            SELECT trade_date, wind_micro_amount 
+            FROM market_turnover_history 
+            WHERE wind_micro_amount IS NOT NULL AND wind_micro_amount > 0 
+            ORDER BY trade_date DESC LIMIT 2
+        """)
+        wind_rows = cursor.fetchall()
+
     conn.close()
 
-    if not rows: return {"data": None}
+    if not rows:
+        return {"data": None}
 
-    latest, prev = rows[0], (rows[1] if len(rows) > 1 else None)
-    total_amt, sh_amt, sz_amt = safe_float(latest["total_amount"]), safe_float(latest["sh_amount"]), safe_float(latest["sz_amount"])
-    cyb_amt, kc50_amt, hl_amt = safe_float(latest["cyb_amt"]), safe_float(latest["kc50_amt"]), safe_float(latest["hl_amount"])
+    latest = rows[0]
+    prev = rows[1] if len(rows) > 1 else None
 
-    wind_micro_amt, wind_micro_diff = 0.0, 0.0
-    if has_wind:
-        valid_winds = [float(r["wind_micro_amount"]) for r in rows if r["wind_micro_amount"] and 0 < float(r["wind_micro_amount"]) < 1e5]
-        if valid_winds: wind_micro_amt = round(valid_winds[0], 2)
-        if len(valid_winds) >= 2: wind_micro_diff = round(valid_winds[0] - valid_winds[1], 2)
+    total_amt = safe_float(latest["total_amount"])
+    sh_amt = safe_float(latest["sh_amount"])
+    sz_amt = safe_float(latest["sz_amount"])
+    cyb_amt = safe_float(latest["cyb_amount"])
+    kc50_amt = safe_float(latest["kc50_amount"])
+    hl_amt = safe_float(latest["hl_amount"])
+
+    total_diff = round(total_amt - safe_float(prev["total_amount"]), 2) if prev else 0.0
+    cyb_diff = round(cyb_amt - safe_float(prev["cyb_amount"]), 2) if prev else 0.0
+    kc50_diff = round(kc50_amt - safe_float(prev["kc50_amount"]), 2) if prev else 0.0
+    hl_diff = round(hl_amt - safe_float(prev["hl_amount"]), 2) if prev else 0.0
+
+    standard_trade_date = latest["trade_date"]
+
+    wind_micro_amt = 0.0
+    wind_micro_diff = 0.0
+    wind_micro_date = standard_trade_date
+
+    if wind_rows:
+        wind_micro_date = wind_rows[0]["trade_date"]
+        wind_micro_amt = round(safe_float(wind_rows[0]["wind_micro_amount"]), 2)
+        if len(wind_rows) > 1:
+            wind_micro_diff = round(wind_micro_amt - safe_float(wind_rows[1]["wind_micro_amount"]), 2)
 
     return {
         "data": {
-            "trade_date": latest["trade_date"],
-            "total_amount": total_amt, "sh_amount": sh_amt, "sz_amount": sz_amt,
-            "cyb_amount": cyb_amt, "kc50_amount": kc50_amt, "hl_amount": hl_amt,
+            "trade_date": standard_trade_date,
+            "standard_date": standard_trade_date,
+            "wind_micro_date": wind_micro_date,
+            "total_amount": total_amt,
+            "sh_amount": sh_amt,
+            "sz_amount": sz_amt,
+            "cyb_amount": cyb_amt,
+            "kc50_amount": kc50_amt,
+            "hl_amount": hl_amt,
             "wind_micro_amount": wind_micro_amt,
-            "total_diff": round(total_amt - safe_float(prev["total_amount"]), 2) if prev else 0.0,
-            "cyb_diff": round(cyb_amt - safe_float(prev["cyb_amt"]), 2) if prev else 0.0,
-            "kc50_diff": round(kc50_amt - safe_float(prev["kc50_amt"]), 2) if prev else 0.0,
-            "hl_diff": round(hl_amt - safe_float(prev["hl_amt"]), 2) if prev else 0.0,
+            "total_diff": total_diff,
+            "cyb_diff": cyb_diff,
+            "kc50_diff": kc50_diff,
+            "hl_diff": hl_diff,
             "wind_micro_diff": wind_micro_diff,
         }
     }
@@ -89,24 +133,40 @@ def get_turnover_overview():
 def get_turnover_history(days: int = 365):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(market_turnover_history)")
-    has_wind = "wind_micro_amount" in [col[1] for col in cursor.fetchall()]
-    select_fields = "trade_date, total_amount, sh_amount, sz_amount, cyb_amount, kc50_amount, hl_amount"
-    if has_wind: select_fields += ", wind_micro_amount"
 
-    cursor.execute(f"SELECT {select_fields} FROM market_turnover_history ORDER BY trade_date DESC LIMIT ?", (days,))
+    cursor.execute("PRAGMA table_info(market_turnover_history)")
+    columns = [col[1] for col in cursor.fetchall()]
+    has_wind = "wind_micro_amount" in columns
+
+    select_fields = "trade_date, total_amount, sh_amount, sz_amount, cyb_amount, kc50_amount, hl_amount"
+    if has_wind:
+        select_fields += ", wind_micro_amount"
+
+    # 【修复核心】同上，过滤历史列表中的空数据，防止前端图标出现中断
+    cursor.execute(f"""
+        SELECT {select_fields}
+        FROM market_turnover_history 
+        WHERE total_amount IS NOT NULL
+        ORDER BY trade_date DESC LIMIT ?
+    """, (days,))
     rows = cursor.fetchall()
     conn.close()
+
     rows.reverse()
 
     list_data = []
     for r in rows:
         w_val = None
-        if has_wind and r["wind_micro_amount"]:
-            try:
-                f_w = float(r["wind_micro_amount"])
-                if 0 < f_w < 1e5: w_val = round(f_w, 2)
-            except: pass
+        if has_wind and "wind_micro_amount" in r.keys():
+            raw_w = r["wind_micro_amount"]
+            if raw_w is not None:
+                try:
+                    f_w = float(raw_w)
+                    if 0 < f_w < 1e5:
+                        w_val = round(f_w, 2)
+                except (ValueError, TypeError):
+                    pass
+
         list_data.append({
             "trade_date": r["trade_date"],
             "total_amount": safe_float(r["total_amount"]),
@@ -117,34 +177,92 @@ def get_turnover_history(days: int = 365):
             "hl_amount": safe_float(r["hl_amount"]),
             "wind_micro_amount": w_val,
         })
+
     return {"list": list_data}
 
 
-@app.get("/api/index/kline")
-def get_index_kline(code: str = "000001.SH"):
+@app.get("/api/limit_stocks")
+def get_limit_stocks(limit_type: str = "limit_up"):
     conn = get_db()
     cursor = conn.cursor()
-    
-    if code == "8841431.WI":
-        cursor.execute("""
-            SELECT trade_date, open, high, low, close, volume, amount_yi as amount
-            FROM wind_kline_history
-            ORDER BY trade_date ASC
-        """)
-    else:
-        cursor.execute("""
-            SELECT trade_date, open, high, low, close, volume, amount
-            FROM index_kline_history
-            WHERE index_code = ?
-            ORDER BY trade_date ASC
-        """, (code,))
-        
+
+    # 取有数据的最新一天
+    cursor.execute("SELECT MAX(trade_date) FROM limit_stocks WHERE last_price IS NOT NULL")
+    latest_date_res = cursor.fetchone()
+    latest_date = latest_date_res[0] if latest_date_res else ""
+
+    if not latest_date:
+        conn.close()
+        return {"date": "", "stocks": [], "industry_summary": []}
+
+    cursor.execute("""
+        SELECT stock_code, stock_name, last_price, change_pct, limit_type, status, industry, first_limit_time, limit_num
+        FROM limit_stocks 
+        WHERE trade_date=? AND limit_type=?
+        ORDER BY limit_num DESC, first_limit_time ASC
+    """, (latest_date, limit_type))
+
     rows = cursor.fetchall()
     conn.close()
 
-    data = []
+    stocks = []
+    industries = []
+
     for r in rows:
-        data.append({
+        ind = r["industry"] if r["industry"] else "其他"
+        industries.append(ind)
+        stocks.append({
+            "stock_code": r["stock_code"],
+            "stock_name": r["stock_name"],
+            "last_price": safe_float(r["last_price"]),
+            "change_pct": safe_float(r["change_pct"]),
+            "limit_type": r["limit_type"],
+            "status": r["status"],
+            "industry": ind,
+            "first_limit_time": r["first_limit_time"],
+            "limit_num": r["limit_num"],
+        })
+
+    ind_counts = Counter(industries)
+    industry_summary = [{"industry": k, "count": v} for k, v in
+                        sorted(ind_counts.items(), key=lambda item: item[1], reverse=True)]
+
+    return {
+        "date": latest_date,
+        "stocks": stocks,
+        "industry_summary": industry_summary,
+    }
+
+
+@app.get("/api/index/kline")
+def get_index_kline(code: str = "000001.SH", days: int = 365):
+    conn = get_db()
+    cursor = conn.cursor()
+
+    kline_list = []
+    # 过滤空数据，防止 K 线图断层
+    query = """
+        SELECT trade_date, open, high, low, close, volume, amount
+        FROM index_kline_history
+        WHERE index_code = ? AND open IS NOT NULL
+        ORDER BY trade_date ASC
+        LIMIT ?
+    """
+
+    if code == "8841423.WI":
+        cursor.execute("""
+            SELECT trade_date, open, high, low, close, volume, amount_yi AS amount
+            FROM wind_kline_history
+            WHERE open IS NOT NULL
+            ORDER BY trade_date ASC
+            LIMIT ?
+        """, (days,))
+    else:
+        cursor.execute(query, (code, days))
+
+    rows = cursor.fetchall()
+    for r in rows:
+        kline_list.append({
             "trade_date": r["trade_date"],
             "open": safe_float(r["open"]),
             "high": safe_float(r["high"]),
@@ -153,46 +271,12 @@ def get_index_kline(code: str = "000001.SH"):
             "volume": safe_float(r["volume"]),
             "amount": safe_float(r["amount"]),
         })
-    return {"code": code, "list": data}
 
-
-@app.get("/api/limit_stocks")
-def get_limit_stocks(limit_type: str = "limit_up"):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT MAX(trade_date) FROM limit_stocks")
-    latest_date = (cursor.fetchone() or [""])[0]
-    if not latest_date:
-        conn.close()
-        return {"date": "", "stocks": [], "industry_summary": []}
-
-    cursor.execute("""
-        SELECT stock_code, stock_name, last_price, change_pct, limit_type, status, industry, first_limit_time, limit_num
-        FROM limit_stocks WHERE trade_date=? AND limit_type=?
-        ORDER BY limit_num DESC, first_limit_time ASC
-    """, (latest_date, limit_type))
-    rows = cursor.fetchall()
     conn.close()
-
-    stocks, industries = [], []
-    for r in rows:
-        ind = r["industry"] if r["industry"] else "其他"
-        industries.append(ind)
-        stocks.append({
-            "stock_code": r["stock_code"], "stock_name": r["stock_name"],
-            "last_price": safe_float(r["last_price"]), "change_pct": safe_float(r["change_pct"]),
-            "limit_type": r["limit_type"], "status": r["status"], "industry": ind,
-            "first_limit_time": r["first_limit_time"], "limit_num": r["limit_num"],
-        })
-
-    ind_counts = Counter(industries)
-    return {
-        "date": latest_date,
-        "stocks": stocks,
-        "industry_summary": [{"industry": k, "count": v} for k, v in sorted(ind_counts.items(), key=lambda x: x[1], reverse=True)],
-    }
+    return {"code": code, "list": kline_list}
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
