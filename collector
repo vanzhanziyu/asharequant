@@ -7,7 +7,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 
 # ==================== 全局配置 ====================
 DB_PATH = "market_data.db"
-TUSHARE_TOKEN = "3e2b532cd5ed5f195ff088fd4dd38e260e5c00c5e4cf4acdacde7a3c"
+TUSHARE_TOKEN = ""
 
 
 # ==================== 数据库初始化 ====================
