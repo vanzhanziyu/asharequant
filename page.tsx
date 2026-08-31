@@ -15,7 +15,6 @@ import {
   Coins,
   BarChart2,
   Calendar,
-  Landmark,
 } from 'lucide-react';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
@@ -60,12 +59,6 @@ interface MarginItem {
   rzrqye: number;
 }
 
-interface TreasuryYieldItem {
-  trade_date: string;
-  y10: number;
-  y30: number;
-}
-
 const getUpColor = (ratio: number) => {
   if (ratio > 0.7) return '#f43f5e';
   if (ratio > 0.4) return '#e11d48';
@@ -81,7 +74,7 @@ const getDownColor = (ratio: number) => {
 };
 
 export default function Dashboard() {
-  const [activeMainView, setActiveMainView] = useState<'emotion' | 'price' | 'macro'>('emotion');
+  const [activeMainView, setActiveMainView] = useState<'emotion' | 'price'>('emotion');
   const [activeTab, setActiveTab] = useState<'up' | 'down'>('up');
   const [selectedPriceIndex, setSelectedPriceIndex] = useState<string>('000001.SH');
 
@@ -142,11 +135,6 @@ export default function Dashboard() {
     fetcher
   );
 
-  const { data: treasuryYieldRes, mutate: refreshTreasuryYields } = useSWR(
-    'http://127.0.0.1:8000/api/macro/us-treasury-yields?days=3650',
-    fetcher
-  );
-
   const marginList: MarginItem[] = Array.isArray(marginRes) ? marginRes : marginRes?.data || [];
   const latestMargin = marginList.length > 0 ? marginList[marginList.length - 1] : null;
   const prevMargin = marginList.length > 1 ? marginList[marginList.length - 2] : null;
@@ -158,10 +146,6 @@ export default function Dashboard() {
   const turnoverData: TurnoverOverview | null = turnoverRes?.data || null;
   const historyList = historyRes?.list || [];
   const klineList = klineRes?.list || [];
-  const treasuryYieldList: TreasuryYieldItem[] = treasuryYieldRes?.list || [];
-  const latestTreasuryYield = treasuryYieldList.length > 0
-    ? treasuryYieldList[treasuryYieldList.length - 1]
-    : null;
 
   const validWindHistory = historyList.filter((item: any) => item.wind_micro_amount && item.wind_micro_amount > 0);
   const latestValidWind = validWindHistory.length > 0 ? validWindHistory[validWindHistory.length - 1] : null;
@@ -430,149 +414,6 @@ export default function Dashboard() {
     };
   };
 
-  const getTreasuryYieldChartOption = () => {
-    const dates = treasuryYieldList.map((item) => item.trade_date);
-    const y10Values = treasuryYieldList.map((item) => item.y10);
-    const y30Values = treasuryYieldList.map((item) => item.y30);
-
-    return {
-      backgroundColor: 'transparent',
-      animationDuration: 650,
-      color: ['#38bdf8', '#f59e0b'],
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: {
-          type: 'cross',
-          crossStyle: { color: '#94a3b8' },
-          label: {
-            backgroundColor: '#334155',
-            color: '#f8fafc',
-          },
-        },
-        backgroundColor: 'rgba(15, 23, 42, 0.96)',
-        borderColor: '#475569',
-        borderWidth: 1,
-        padding: [10, 12],
-        textStyle: { color: '#e2e8f0', fontSize: 12 },
-        formatter: (params: any[]) => {
-          const header = `<div style="margin-bottom:6px;color:#94a3b8">${params[0]?.axisValue ?? '--'}</div>`;
-          const values = params.map((item) => (
-            `<div style="display:flex;justify-content:space-between;gap:28px">` +
-            `<span>${item.marker} ${item.seriesName}</span>` +
-            `<strong style="color:#f8fafc">${Number(item.value).toFixed(3)}%</strong>` +
-            `</div>`
-          )).join('');
-          return header + values;
-        },
-      },
-      legend: {
-        data: ['10年期美债', '30年期美债'],
-        top: 8,
-        left: 8,
-        itemWidth: 18,
-        itemHeight: 3,
-        textStyle: { color: '#cbd5e1', fontSize: 12 },
-      },
-      toolbox: {
-        right: 12,
-        top: 4,
-        iconStyle: { borderColor: '#94a3b8' },
-        emphasis: { iconStyle: { borderColor: '#f8fafc' } },
-        feature: {
-          dataZoom: { yAxisIndex: 'none' },
-          restore: {},
-        },
-      },
-      grid: { left: '5%', right: '5%', top: 54, bottom: 72, containLabel: true },
-      xAxis: {
-        type: 'category',
-        boundaryGap: false,
-        data: dates,
-        axisLine: { lineStyle: { color: '#334155' } },
-        axisTick: { show: false },
-        axisLabel: {
-          color: '#94a3b8',
-          fontSize: 10,
-          hideOverlap: true,
-          formatter: (value: string) => value.slice(0, 7),
-        },
-        axisPointer: { label: { formatter: (params: any) => params.value } },
-      },
-      yAxis: {
-        type: 'value',
-        name: '收益率 (%)',
-        nameTextStyle: { color: '#64748b', padding: [0, 0, 0, 6] },
-        scale: true,
-        splitNumber: 5,
-        axisLine: { show: false },
-        axisTick: { show: false },
-        axisLabel: { color: '#94a3b8', fontSize: 10, formatter: '{value}%' },
-        splitLine: { lineStyle: { color: '#1e293b', type: 'dashed' } },
-      },
-      dataZoom: [
-        {
-          type: 'inside',
-          start: 0,
-          end: 100,
-          zoomOnMouseWheel: true,
-          moveOnMouseMove: true,
-          moveOnMouseWheel: true,
-        },
-        {
-          type: 'slider',
-          start: 0,
-          end: 100,
-          bottom: 16,
-          height: 22,
-          borderColor: '#334155',
-          backgroundColor: '#0f172a',
-          fillerColor: 'rgba(56, 189, 248, 0.22)',
-          dataBackground: {
-            lineStyle: { color: '#475569' },
-            areaStyle: { color: 'rgba(71, 85, 105, 0.18)' },
-          },
-          handleStyle: { color: '#38bdf8', borderColor: '#e0f2fe' },
-          textStyle: { color: '#64748b', fontSize: 10 },
-        },
-      ],
-      series: [
-        {
-          name: '10年期美债',
-          type: 'line',
-          smooth: 0.2,
-          showSymbol: false,
-          symbol: 'circle',
-          symbolSize: 7,
-          data: y10Values,
-          lineStyle: { width: 2.5, color: '#38bdf8' },
-          itemStyle: { color: '#38bdf8' },
-          emphasis: { focus: 'series', scale: true },
-          areaStyle: {
-            color: {
-              type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-              colorStops: [
-                { offset: 0, color: 'rgba(56, 189, 248, 0.24)' },
-                { offset: 1, color: 'rgba(56, 189, 248, 0)' },
-              ],
-            },
-          },
-        },
-        {
-          name: '30年期美债',
-          type: 'line',
-          smooth: 0.2,
-          showSymbol: false,
-          symbol: 'circle',
-          symbolSize: 7,
-          data: y30Values,
-          lineStyle: { width: 2.5, color: '#f59e0b' },
-          itemStyle: { color: '#f59e0b' },
-          emphasis: { focus: 'series', scale: true },
-        },
-      ],
-    };
-  };
-
   const getTreemapOption = (summaryData: IndustrySummary[], isUp: boolean) => {
     if (!summaryData.length) return {};
     const maxVal = Math.max(...summaryData.map((item) => item.count), 1);
@@ -641,7 +482,6 @@ export default function Dashboard() {
     refreshUp();
     refreshDown();
     refreshKline();
-    refreshTreasuryYields();
   };
 
   const renderDiffBadge = (diff?: number) => {
@@ -687,14 +527,6 @@ export default function Dashboard() {
               }`}
             >
               价格走势看板 (K线)
-            </button>
-            <button
-              onClick={() => setActiveMainView('macro')}
-              className={`px-3 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
-                activeMainView === 'macro' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              宏观经济
             </button>
           </div>
         </div>
@@ -1048,7 +880,7 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
-      ) : activeMainView === 'price' ? (
+      ) : (
         /* 价格走势看板 (K线) */
         <div className="flex-1 bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col min-h-0">
           <div className="flex items-center justify-between mb-4 shrink-0">
@@ -1070,76 +902,6 @@ export default function Dashboard() {
           </div>
           <div className="flex-1 w-full min-h-0 bg-slate-950/40 rounded-lg border border-slate-800 p-2">
             <ReactECharts option={getKlineChartOption()} style={{ height: '100%', width: '100%' }} />
-          </div>
-        </div>
-      ) : (
-        /* 宏观经济看板 */
-        <div className="flex-1 min-h-0 flex flex-col gap-4 overflow-hidden">
-          <section className="bg-gradient-to-r from-slate-900 via-slate-900 to-sky-950/40 border border-sky-500/20 rounded-xl px-5 py-4 shadow-xl shrink-0">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  <Landmark className="w-5 h-5 text-sky-400" />
-                  <h2 className="text-base font-bold text-slate-50">美国国债收益率</h2>
-                  <span className="px-2 py-0.5 rounded-full border border-sky-400/25 bg-sky-400/10 text-[10px] font-medium text-sky-300">近10年 · 日频</span>
-                </div>
-                <p className="text-xs text-slate-400 mt-1.5">10年期是宏观与资产定价基准，30年期用于观察超长期利率与期限溢价。</p>
-              </div>
-              <div className="text-right text-[11px] text-slate-500">
-                <div>数据源：Tushare · us_tycr</div>
-                <div className="font-mono text-slate-400 mt-1">最新交易日：{latestTreasuryYield?.trade_date ?? '--'}</div>
-              </div>
-            </div>
-          </section>
-
-          <section className="grid grid-cols-1 md:grid-cols-3 gap-3 shrink-0">
-            <div className="bg-slate-900 border border-sky-500/20 rounded-xl p-4 shadow-md">
-              <div className="text-xs text-slate-400">10年期美债收益率</div>
-              <div className="mt-2 flex items-end gap-1">
-                <span className="text-3xl font-bold font-mono text-sky-300">{latestTreasuryYield ? latestTreasuryYield.y10.toFixed(3) : '--'}</span>
-                <span className="text-sm text-slate-400 mb-1">%</span>
-              </div>
-              <div className="mt-2 text-[11px] text-slate-500">市场核心长端定价基准</div>
-            </div>
-            <div className="bg-slate-900 border border-amber-500/20 rounded-xl p-4 shadow-md">
-              <div className="text-xs text-slate-400">30年期美债收益率</div>
-              <div className="mt-2 flex items-end gap-1">
-                <span className="text-3xl font-bold font-mono text-amber-300">{latestTreasuryYield ? latestTreasuryYield.y30.toFixed(3) : '--'}</span>
-                <span className="text-sm text-slate-400 mb-1">%</span>
-              </div>
-              <div className="mt-2 text-[11px] text-slate-500">关注长期财政与期限溢价</div>
-            </div>
-            <div className="bg-slate-900 border border-violet-500/20 rounded-xl p-4 shadow-md">
-              <div className="text-xs text-slate-400">30Y − 10Y 利差</div>
-              <div className="mt-2 flex items-end gap-1">
-                <span className="text-3xl font-bold font-mono text-violet-300">
-                  {latestTreasuryYield ? (latestTreasuryYield.y30 - latestTreasuryYield.y10).toFixed(3) : '--'}
-                </span>
-                <span className="text-sm text-slate-400 mb-1">个百分点</span>
-              </div>
-              <div className="mt-2 text-[11px] text-slate-500">数值上升代表曲线长端陡峭化</div>
-            </div>
-          </section>
-
-          <section className="flex-1 min-h-0 bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl">
-            {treasuryYieldList.length > 0 ? (
-              <ReactECharts
-                option={getTreasuryYieldChartOption()}
-                style={{ height: '100%', width: '100%' }}
-                opts={{ renderer: 'canvas' }}
-              />
-            ) : (
-              <div className="h-full flex flex-col items-center justify-center text-slate-500">
-                <Landmark className="w-8 h-8 mb-3 text-slate-600" />
-                <p className="text-sm">暂无美债收益率数据</p>
-                <p className="text-xs mt-1">启动 collector 后将自动同步 Tushare 的 us_tycr 数据。</p>
-              </div>
-            )}
-          </section>
-
-          <div className="flex items-center justify-between px-1 text-[11px] text-slate-500 shrink-0">
-            <span>滚动鼠标滚轮可缩放时间轴，拖动底部滑块可选择区间。</span>
-            <span>移动鼠标可使用十字光标查看同一交易日的两条收益率。</span>
           </div>
         </div>
       )}
