@@ -29,15 +29,19 @@ export default function FactorPanel() {
   const [rankInput, setRankInput] = React.useState('100');
   const [rank, setRank] = React.useState(100);
   const [industry, setIndustry] = React.useState<string | null>(null);
-  const pool = useSWR(`${API}/api/factors/pool?factor=${factor}&rank=${rank}`, fetcher, { refreshInterval: 30 * 60 * 1000, revalidateOnFocus: true });
-  const performance = useSWR(`${API}/api/factors/performance?factor=${factor}&days=1095`, fetcher, { refreshInterval: 30 * 60 * 1000, revalidateOnFocus: true });
+  // New samples arrive while the first full-universe backfill is running.
+  // Keep the page live so visitors do not have to reload it manually.
+  const pool = useSWR(`${API}/api/factors/pool?factor=${factor}&rank=${rank}`, fetcher, { refreshInterval: 30_000, revalidateOnFocus: true });
+  const performance = useSWR(`${API}/api/factors/performance?factor=${factor}&days=1095`, fetcher, { refreshInterval: 30_000, revalidateOnFocus: true });
   const current = factors.find(([key]) => key === factor) || factors[0];
   const stocks = pool.data?.stocks || [];
   const filteredStocks = industry ? stocks.filter((stock: Record<string, string>) => stock.industry === industry) : stocks;
   const rows = performance.data?.list || [];
   const progress = pool.data?.progress || performance.data?.progress;
-  const currentStatus = factor === 'market_cap' ? `${progress?.universe || 0} 只沪深非 ST 股票已入库` : factor === 'dividend_yield'
-    ? `分红资料 ${progress?.dividend_ready || 0}/${progress?.universe || 0} 只` : `财务资料 ${progress?.financial_ready || 0}/${progress?.universe || 0} 只`;
+  const available = Number(pool.data?.universe_count || 0);
+  const sourceReady = factor === 'market_cap' ? progress?.universe || 0 : factor === 'dividend_yield' ? progress?.dividend_ready || 0 : progress?.financial_ready || 0;
+  const sourceLabel = factor === 'market_cap' ? '沪深非 ST 股票' : factor === 'dividend_yield' ? '分红资料' : '财务资料';
+  const currentStatus = `已展示 ${available.toLocaleString('zh-CN')} 只可用样本 · ${sourceLabel} ${Number(sourceReady).toLocaleString('zh-CN')}/${Number(progress?.universe || 0).toLocaleString('zh-CN')} 只`;
   const submitRank = (event: React.FormEvent) => {
     event.preventDefault();
     const value = Math.trunc(Number(rankInput));
@@ -69,7 +73,18 @@ export default function FactorPanel() {
     <div className={styles.topbar}><div className={styles.pageTabs}><button className={`${styles.pageButton} ${page === 'pool' ? styles.active : ''}`} onClick={() => setPage('pool')}>因子股票池</button><button className={`${styles.pageButton} ${page === 'performance' ? styles.active : ''}`} onClick={() => setPage('performance')}>因子收益率走势</button></div><span className={styles.status}>{currentStatus}</span></div>
     <div className={styles.factorTabs}>{factors.map(([key, label, detail]) => <button key={key} className={`${styles.factorButton} ${factor === key ? styles.active : ''}`} title={detail} onClick={() => { setFactor(key); setIndustry(null); }}>{label}</button>)}</div>
     <header className={styles.heading}><div><span>沪深非 ST 股票 · 数据本地入库</span><h2>{current[1]}</h2><p>{current[2]}。正数取排名前 N；负数取排名后 N。</p></div>{page === 'pool' && <form className={styles.rankForm} onSubmit={submitRank}><label>排名筛选<input aria-label="因子排名筛选" value={rankInput} type="number" min="-5000" max="5000" step="1" onChange={event => setRankInput(event.target.value)} /></label><button type="submit">应用</button></form>}</header>
-    {page === 'pool' ? <><div className={styles.filterLine}>{industry ? <button onClick={() => setIndustry(null)}>取消行业筛选：{industry}</button> : <span>点击下方行业色块可二次筛选</span>}<b>当前 {filteredStocks.length} / {stocks.length} 只</b></div><div className={styles.treemap}><ReactECharts option={treemap} notMerge style={{ height: '100%' }} onEvents={{ click: (params: { name?: string }) => params.name && setIndustry(industry === params.name ? null : params.name) }} /></div><div className={styles.tableWrap}><table><thead><tr><th>股票代码</th><th>股票名称</th><th>最新收盘价</th><th>最新涨跌幅</th><th>市值排名</th><th>所属行业</th></tr></thead><tbody>{filteredStocks.map((stock: Record<string, number | string>) => <tr key={String(stock.stock_code)}><td><a href={`https://stockpage.10jqka.com.cn/${stock.stock_code}/`} target="_blank" rel="noreferrer">{stock.stock_code}</a></td><td>{stock.stock_name}</td><td>{format(stock.close)}</td><td className={Number(stock.pct_chg) >= 0 ? styles.up : styles.down}>{Number(stock.pct_chg) > 0 ? '+' : ''}{format(stock.pct_chg)}%</td><td>{stock.market_cap_rank ? `#${format(stock.market_cap_rank, 0)}` : '--'}</td><td>{stock.industry || '其他'}</td></tr>)}{!filteredStocks.length && <tr><td colSpan={6} className={styles.empty}>{pool.data?.date ? '当前筛选条件下暂无股票。' : '因子数据正在回补；市值因子会先可用，红利与 EBITDA 因子将在基础资料回补后开放。'}</td></tr>}</tbody></table></div></> : <><div className={styles.chartHead}><b>近三年等权组合累计收益</b><span>每日按因子排名选取前 100 只；以次一交易日前复权收盘价计算组合算术平均收益。</span></div><div className={styles.chart}><p>滚轮缩放 · 底部滑条平移 · 十字光标查看日收益与持仓数</p><ReactECharts option={performanceOption} notMerge style={{ height: '100%' }} /></div>{!rows.length && <div className={styles.pending}>收益序列将在三年行情、分红和财务基础资料完成回补后自动计算，无需手动操作。</div>}</>}
+    {page === 'pool' ? <>
+      <div className={styles.filterLine}>{industry ? <button onClick={() => setIndustry(null)}>取消行业筛选：{industry}</button> : <span>每 30 秒自动显示新回补的可用样本；点击下方行业色块可二次筛选</span>}<b>当前 {filteredStocks.length} / {stocks.length} 只</b></div>
+      <div className={styles.treemap}><ReactECharts option={treemap} notMerge style={{ height: '100%' }} onEvents={{ click: (params: { name?: string }) => params.name && setIndustry(industry === params.name ? null : params.name) }} /></div>
+      <div className={styles.tableWrap}><table><thead><tr><th>股票代码</th><th>股票名称</th><th>最新收盘价</th><th>最新涨跌幅</th><th>市值排名</th><th>所属行业</th></tr></thead><tbody>
+        {filteredStocks.map((stock: Record<string, number | string>) => <tr key={String(stock.stock_code)}><td><a href={`https://stockpage.10jqka.com.cn/${stock.stock_code}/`} target="_blank" rel="noreferrer">{stock.stock_code}</a></td><td>{stock.stock_name}</td><td>{format(stock.close)}</td><td className={Number(stock.pct_chg) >= 0 ? styles.up : styles.down}>{Number(stock.pct_chg) > 0 ? '+' : ''}{format(stock.pct_chg)}%</td><td>{stock.market_cap_rank ? `#${format(stock.market_cap_rank, 0)}` : '--'}</td><td>{stock.industry || '其他'}</td></tr>)}
+        {!filteredStocks.length && <tr><td colSpan={6} className={styles.empty}>暂未形成可用样本；{sourceLabel}已回补 {Number(sourceReady).toLocaleString('zh-CN')}/{Number(progress?.universe || 0).toLocaleString('zh-CN')} 只，新的可用股票会自动显示。</td></tr>}
+      </tbody></table></div>
+    </> : <>
+      <div className={styles.chartHead}><b>近三年等权组合累计收益</b><span>每日按因子排名选取前 100 只；以次一交易日前复权收盘价计算组合算术平均收益。</span></div>
+      <div className={styles.chart}><p>滚轮缩放 · 底部滑条平移 · 十字光标查看日收益与持仓数</p><ReactECharts option={performanceOption} notMerge style={{ height: '100%' }} /></div>
+      {!rows.length && <div className={styles.pending}>收益序列会随已回补的行情和因子样本逐步生成，页面会每 30 秒自动刷新。</div>}
+    </>}
     <p className={styles.footnote}>市值与行情：Tushare 每日指标、日线、复权因子；纯红利：以最近一次可得分红记录为基础、滚动 735 个交易日现金分红 ÷ 3 ÷ 当日收盘价；EBITDA：使用已公告年度财报，在其最近公告日回看 735 个交易日计算年复合增速，期间 EBITDA 非正的样本剔除。</p>
   </section>;
 }

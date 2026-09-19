@@ -291,6 +291,10 @@ def universe_values(factor_name: str, signal_date: str) -> list[dict]:
 
 def store_snapshot(factor_name: str, signal_date: str) -> int:
     values = universe_values(factor_name, signal_date)
+    # Fundamental data arrives in small batches. Keep an earlier usable
+    # snapshot if the newest batch has not produced any valid sample yet.
+    if not values:
+        return 0
     with connect() as conn:
         conn.execute("DELETE FROM factor_universe_snapshot WHERE factor_name=? AND signal_date=?", (factor_name, signal_date))
         total = len(values)
@@ -317,10 +321,11 @@ def rebuild_latest_snapshots() -> None:
         latest = conn.execute("SELECT MAX(trade_date) FROM factor_stock_daily").fetchone()[0]
     if not latest:
         return
-    readiness = snapshots_ready()
     for factor_name in FACTORS:
-        if readiness[factor_name]:
-            count = store_snapshot(factor_name, latest)
+        # Publish each available partial cross-section immediately instead of
+        # waiting for the multi-hour full-universe fundamental backfill.
+        count = store_snapshot(factor_name, latest)
+        if count:
             print(f"[因子] {factor_name} {latest} 快照 {count} 只。", flush=True)
 
 
@@ -393,9 +398,6 @@ def calculate_performance() -> None:
         return
     try:
         init_db()
-        readiness = snapshots_ready()
-        if get_state("market_history_status") != "completed" or not all(readiness.values()):
-            return
         cutoff = (dt.date.today() - dt.timedelta(days=HISTORY_DAYS)).isoformat()
         with connect() as conn:
             dates = [row["trade_date"] for row in conn.execute(
@@ -441,7 +443,9 @@ def calculate_performance() -> None:
                         (factor_name, trade_date, signal_date, len(returns), daily_return * 100, nav, stamp()),
                     )
             print(f"[因子] {factor_name} 三年组合收益已重算。", flush=True)
-        set_state("performance_status", "completed")
+        market_complete = get_state("market_history_status") == "completed"
+        readiness = snapshots_ready()
+        set_state("performance_status", "completed" if market_complete and all(readiness.values()) else "backfilling")
     except Exception as exc:
         print(f"[因子] 收益率计算失败：{exc}", flush=True)
     finally:
@@ -456,6 +460,7 @@ def start_scheduler() -> None:
     scheduler.add_job(sync_current, "cron", day_of_week="mon-fri", hour="16", minute="20", id="factor_post_close", **opts)
     scheduler.add_job(sync_market_history_batch, "interval", minutes=5, id="factor_history", **opts)
     scheduler.add_job(sync_fundamentals, "interval", minutes=2, id="factor_fundamentals", **opts)
+    scheduler.add_job(calculate_performance, "date", run_date=dt.datetime.now(), id="factor_start_performance", **opts)
     scheduler.add_job(calculate_performance, "interval", minutes=20, id="factor_performance", **opts)
     scheduler.start()
 
