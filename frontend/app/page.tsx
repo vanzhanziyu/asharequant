@@ -7,7 +7,12 @@ import MacroPanel from './MacroPanel';
 import VixPanel from './VixPanel';
 import FactorPanel from './FactorPanel';
 
-const API = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
+// In local development the FastAPI server runs on port 8000.  In production
+// requests must stay on the current host so Caddy can proxy /api to FastAPI.
+const API = process.env.NEXT_PUBLIC_API_BASE_URL ||
+  (typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    ? 'http://127.0.0.1:8000'
+    : '');
 const fetcher = (url: string) => fetch(url).then(async res => { if (!res.ok) throw new Error(`请求失败 (${res.status})`); return res.json(); });
 type Item = Record<string, number | string | null>;
 type Pool = { date: string; stocks: Item[]; industry_summary: { industry: string; count: number }[] };

@@ -5,7 +5,10 @@ import React from 'react';
 import useSWR from 'swr';
 import styles from './VixPanel.module.css';
 
-const API = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
+const API = process.env.NEXT_PUBLIC_API_BASE_URL ||
+  (typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    ? 'http://127.0.0.1:8000'
+    : '');
 const fetcher = (url: string) => fetch(url).then(async response => {
   if (!response.ok) throw new Error(`请求失败 (${response.status})`);
   return response.json();

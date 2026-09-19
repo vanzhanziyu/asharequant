@@ -5,7 +5,12 @@ import ReactECharts from 'echarts-for-react';
 import useSWR from 'swr';
 import styles from './FactorPanel.module.css';
 
-const API = process.env.NEXT_PUBLIC_API_BASE_URL === undefined ? 'http://127.0.0.1:8000' : process.env.NEXT_PUBLIC_API_BASE_URL;
+// Use the local FastAPI port only while developing locally.  The deployed
+// dashboard uses same-origin /api requests through the reverse proxy.
+const API = process.env.NEXT_PUBLIC_API_BASE_URL ||
+  (typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    ? 'http://127.0.0.1:8000'
+    : '');
 const fetcher = (url: string) => fetch(url).then(async response => {
   if (!response.ok) throw new Error(`请求失败 (${response.status})`);
   return response.json();
