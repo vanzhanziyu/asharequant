@@ -72,19 +72,18 @@ export default function FactorPanel() {
   return <section className={styles.panel}>
     <div className={styles.topbar}><div className={styles.pageTabs}><button className={`${styles.pageButton} ${page === 'pool' ? styles.active : ''}`} onClick={() => setPage('pool')}>因子股票池</button><button className={`${styles.pageButton} ${page === 'performance' ? styles.active : ''}`} onClick={() => setPage('performance')}>因子收益率走势</button></div><span className={styles.status}>{currentStatus}</span></div>
     <div className={styles.factorTabs}>{factors.map(([key, label, detail]) => <button key={key} className={`${styles.factorButton} ${factor === key ? styles.active : ''}`} title={detail} onClick={() => { setFactor(key); setIndustry(null); }}>{label}</button>)}</div>
-    <header className={styles.heading}><div><span>沪深非 ST 股票 · 数据本地入库</span><h2>{current[1]}</h2><p>{current[2]}。正数取排名前 N；负数取排名后 N。</p></div>{page === 'pool' && <form className={styles.rankForm} onSubmit={submitRank}><label>排名筛选<input aria-label="因子排名筛选" value={rankInput} type="number" min="-5000" max="5000" step="1" onChange={event => setRankInput(event.target.value)} /></label><button type="submit">应用</button></form>}</header>
+    <header className={styles.heading}><h2>{current[1]}</h2>{page === 'pool' && <form className={styles.rankForm} onSubmit={submitRank}><label>排名<input aria-label="因子排名筛选" value={rankInput} type="number" min="-5000" max="5000" step="1" onChange={event => setRankInput(event.target.value)} /></label><button type="submit">应用</button></form>}</header>
     {page === 'pool' ? <>
-      <div className={styles.filterLine}>{industry ? <button onClick={() => setIndustry(null)}>取消行业筛选：{industry}</button> : <span>每 30 秒自动显示新回补的可用样本；点击下方行业色块可二次筛选</span>}<b>当前 {filteredStocks.length} / {stocks.length} 只</b></div>
+      <div className={styles.filterLine}>{industry ? <button onClick={() => setIndustry(null)}>取消行业：{industry}</button> : <span />}<b>当前 {filteredStocks.length} / {stocks.length} 只</b></div>
       <div className={styles.treemap}><ReactECharts option={treemap} notMerge style={{ height: '100%' }} onEvents={{ click: (params: { name?: string }) => params.name && setIndustry(industry === params.name ? null : params.name) }} /></div>
       <div className={styles.tableWrap}><table><thead><tr><th>股票代码</th><th>股票名称</th><th>最新收盘价</th><th>最新涨跌幅</th><th>市值排名</th><th>所属行业</th></tr></thead><tbody>
         {filteredStocks.map((stock: Record<string, number | string>) => <tr key={String(stock.stock_code)}><td><a href={`https://stockpage.10jqka.com.cn/${stock.stock_code}/`} target="_blank" rel="noreferrer">{stock.stock_code}</a></td><td>{stock.stock_name}</td><td>{format(stock.close)}</td><td className={Number(stock.pct_chg) >= 0 ? styles.up : styles.down}>{Number(stock.pct_chg) > 0 ? '+' : ''}{format(stock.pct_chg)}%</td><td>{stock.market_cap_rank ? `#${format(stock.market_cap_rank, 0)}` : '--'}</td><td>{stock.industry || '其他'}</td></tr>)}
         {!filteredStocks.length && <tr><td colSpan={6} className={styles.empty}>暂未形成可用样本；{sourceLabel}已回补 {Number(sourceReady).toLocaleString('zh-CN')}/{Number(progress?.universe || 0).toLocaleString('zh-CN')} 只，新的可用股票会自动显示。</td></tr>}
       </tbody></table></div>
     </> : <>
-      <div className={styles.chartHead}><b>近三年等权组合累计收益</b><span>每日按因子排名选取前 100 只；以次一交易日前复权收盘价计算组合算术平均收益。</span></div>
-      <div className={styles.chart}><p>滚轮缩放 · 底部滑条平移 · 十字光标查看日收益与持仓数</p><ReactECharts option={performanceOption} notMerge style={{ height: '100%' }} /></div>
+      <div className={styles.chartHead}><b>近三年等权组合累计收益</b></div>
+      <div className={styles.chart}><ReactECharts option={performanceOption} notMerge style={{ height: '100%' }} /></div>
       {!rows.length && <div className={styles.pending}>收益序列会随已回补的行情和因子样本逐步生成，页面会每 30 秒自动刷新。</div>}
     </>}
-    <p className={styles.footnote}>市值与行情：Tushare 每日指标、日线、复权因子；纯红利：以最近一次可得分红记录为基础、滚动 735 个交易日现金分红 ÷ 3 ÷ 当日收盘价；EBITDA：使用已公告年度财报，在其最近公告日回看 735 个交易日计算年复合增速，期间 EBITDA 非正的样本剔除。</p>
   </section>;
 }
