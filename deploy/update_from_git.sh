@@ -24,7 +24,7 @@ git fetch origin "$BRANCH"
 git pull --ff-only origin "$BRANCH"
 
 echo "Installing backend dependencies…"
-backend/.venv/bin/pip install --disable-pip-version-check --no-input -r backend/requirements.txt
+backend/.venv/bin/python -m pip install --disable-pip-version-check --no-input -r backend/requirements.txt
 
 echo "Building frontend…"
 (
