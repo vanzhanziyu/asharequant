@@ -1,0 +1,16 @@
+[Unit]
+Description=A-share Market Data Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/opt/ashare-market-monitor/backend
+EnvironmentFile=-/opt/ashare-market-monitor/backend/.env
+ExecStart=/opt/ashare-market-monitor/backend/.venv/bin/python -u collector.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

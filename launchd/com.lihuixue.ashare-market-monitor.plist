@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lihuixue.ashare-market-monitor</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/lihuixue/Documents/行情监控面板/dashboard_supervisor.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/lihuixue/Documents/行情监控面板</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/lihuixue/Documents/行情监控面板/.runtime-logs/supervisor.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/lihuixue/Documents/行情监控面板/.runtime-logs/supervisor.log</string>
+</dict>
+</plist>

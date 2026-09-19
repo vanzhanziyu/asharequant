@@ -1,0 +1,17 @@
+[Unit]
+Description=A-share Market Monitor Frontend
+After=network-online.target ashare-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/opt/ashare-market-monitor/frontend
+Environment=NODE_ENV=production
+Environment=NEXT_PUBLIC_API_BASE_URL=
+ExecStart=/usr/local/bin/npm run start -- --hostname 127.0.0.1 --port 3000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

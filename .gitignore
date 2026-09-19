@@ -1,0 +1,22 @@
+# Server and local secrets
+backend/.env
+
+# Persistent local data (the cloud server maintains its own database)
+backend/market_data.db
+backend/market_data.db-*
+backend/.cache/
+.runtime-logs/
+
+# Python and Node build outputs
+backend/.venv/
+backend/__pycache__/
+**/__pycache__/
+*.py[cod]
+frontend/node_modules/
+frontend/.next/
+frontend/tsconfig.tsbuildinfo
+.pnpm-store/
+
+# OS/editor files
+.DS_Store
+.idea/
