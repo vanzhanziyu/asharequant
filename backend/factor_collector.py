@@ -131,7 +131,7 @@ def sync_stock_basic(client) -> int:
 def _daily_frames(client, trade_date: str):
     compact = trade_date.replace("-", "")
     basic = client.daily_basic(trade_date=compact, fields="ts_code,trade_date,close,total_mv")
-    daily = client.daily(trade_date=compact, fields="ts_code,trade_date,close,pct_chg")
+    daily = client.daily(trade_date=compact, fields="ts_code,trade_date,open,high,low,close,pct_chg")
     adj = client.adj_factor(trade_date=compact, fields="ts_code,trade_date,adj_factor")
     return basic, daily, adj
 
@@ -140,22 +140,29 @@ def store_daily_for_date(client, trade_date: str) -> int:
     basic, daily, adj = _daily_frames(client, trade_date)
     if basic is None or basic.empty:
         return 0
-    market = {str(row["ts_code"]): (number(row.get("close")), number(row.get("pct_chg"))) for _, row in daily.iterrows()} if daily is not None else {}
+    market = {
+        str(row["ts_code"]): {
+            "open": number(row.get("open")), "high": number(row.get("high")), "low": number(row.get("low")),
+            "close": number(row.get("close")), "pct_chg": number(row.get("pct_chg")),
+        }
+        for _, row in daily.iterrows()
+    } if daily is not None else {}
     factors = {str(row["ts_code"]): number(row.get("adj_factor")) for _, row in adj.iterrows()} if adj is not None else {}
     rows = []
     for _, row in basic.iterrows():
         code = str(row.get("ts_code", ""))
-        close = number(row.get("close")) or (market.get(code) or (None, None))[0]
+        quote = market.get(code, {})
+        close = number(row.get("close")) or quote.get("close")
         total_mv = number(row.get("total_mv"))
         if not code or close is None or total_mv is None:
             continue
-        pct_chg = (market.get(code) or (None, None))[1]
-        rows.append((code, trade_date, close, pct_chg, total_mv, factors.get(code), "Tushare", stamp()))
+        rows.append((code, trade_date, quote.get("open"), quote.get("high"), quote.get("low"), close, quote.get("pct_chg"), total_mv, factors.get(code), "Tushare", stamp()))
     with connect() as conn:
         conn.executemany(
-            """INSERT INTO factor_stock_daily (ts_code,trade_date,close,pct_chg,total_mv,adj_factor,source,updated_at)
-               VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(ts_code,trade_date) DO UPDATE SET
-               close=excluded.close,pct_chg=excluded.pct_chg,total_mv=excluded.total_mv,
+            """INSERT INTO factor_stock_daily (ts_code,trade_date,open,high,low,close,pct_chg,total_mv,adj_factor,source,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(ts_code,trade_date) DO UPDATE SET
+               open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,
+               pct_chg=excluded.pct_chg,total_mv=excluded.total_mv,
                adj_factor=excluded.adj_factor,source=excluded.source,updated_at=excluded.updated_at""",
             rows,
         )
@@ -377,7 +384,12 @@ def sync_market_history_batch() -> None:
         cutoff = (dt.date.today() - dt.timedelta(days=HISTORY_DAYS)).isoformat()
         target = [value for value in dates if cutoff <= value <= dt.date.today().isoformat()]
         with connect() as conn:
-            have = {row["trade_date"] for row in conn.execute("SELECT trade_date FROM factor_stock_daily WHERE trade_date>=? GROUP BY trade_date HAVING COUNT(*)>1000", (cutoff,))}
+            have = {row["trade_date"] for row in conn.execute(
+                """SELECT trade_date FROM factor_stock_daily WHERE trade_date>=? GROUP BY trade_date
+                   HAVING COUNT(*) > 1000
+                      AND SUM(CASE WHEN open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL THEN 1 ELSE 0 END) > 1000""",
+                (cutoff,),
+            )}
         missing = [value for value in target if value not in have][:MARKET_HISTORY_BATCH_DAYS]
         if not missing:
             set_state("market_history_status", "completed")
@@ -438,19 +450,32 @@ def calculate_performance(factor_names: tuple[str, ...] = FACTORS) -> None:
                 placeholders = ",".join("?" for _ in codes)
                 with connect() as conn:
                     next_prices = {row["ts_code"]: row for row in conn.execute(
-                        f"SELECT ts_code,close,adj_factor FROM factor_stock_daily WHERE trade_date=? AND ts_code IN ({placeholders})", (trade_date, *codes)
+                        f"SELECT ts_code,open,high,low,close,adj_factor FROM factor_stock_daily WHERE trade_date=? AND ts_code IN ({placeholders})", (trade_date, *codes)
                     )}
-                returns = []
+                returns, open_returns, high_returns, low_returns = [], [], [], []
                 for item in selected:
                     next_row = next_prices.get(item["ts_code"])
                     current_adj = float(item["close"]) * (number(item.get("adj_factor")) or 1.0)
                     if next_row and current_adj > 0:
                         next_adj = float(next_row["close"]) * (number(next_row["adj_factor"]) or 1.0)
                         returns.append(next_adj / current_adj - 1)
+                        for column, bucket in (("open", open_returns), ("high", high_returns), ("low", low_returns)):
+                            price = number(next_row[column])
+                            if price is not None and price > 0:
+                                bucket.append(price * (number(next_row["adj_factor"]) or 1.0) / current_adj - 1)
                 if not returns:
                     continue
                 daily_return = sum(returns) / len(returns)
+                previous_nav = nav
                 nav *= 1 + daily_return
+                # These are equal-weighted, adjusted portfolio OHLC values
+                # from the selected stocks' real next-session daily bars.
+                open_nav = previous_nav * (1 + sum(open_returns) / len(open_returns)) if open_returns else None
+                high_nav = previous_nav * (1 + sum(high_returns) / len(high_returns)) if high_returns else None
+                low_nav = previous_nav * (1 + sum(low_returns) / len(low_returns)) if low_returns else None
+                if open_nav is not None and high_nav is not None and low_nav is not None:
+                    high_nav = max(high_nav, open_nav, nav)
+                    low_nav = min(low_nav, open_nav, nav)
                 with connect() as conn:
                     conn.executemany(
                         "INSERT OR REPLACE INTO factor_portfolio_members (factor_name,signal_date,ts_code,factor_value,factor_rank) VALUES (?,?,?,?,?)",
@@ -458,9 +483,9 @@ def calculate_performance(factor_names: tuple[str, ...] = FACTORS) -> None:
                     )
                     conn.execute(
                         """INSERT OR REPLACE INTO factor_portfolio_daily
-                           (factor_name,trade_date,signal_date,holding_count,daily_return_pct,nav,calculated_at)
-                           VALUES (?,?,?,?,?,?,?)""",
-                        (factor_name, trade_date, signal_date, len(returns), daily_return * 100, nav, stamp()),
+                           (factor_name,trade_date,signal_date,holding_count,daily_return_pct,nav,open_nav,high_nav,low_nav,calculated_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                        (factor_name, trade_date, signal_date, len(returns), daily_return * 100, nav, open_nav, high_nav, low_nav, stamp()),
                     )
             print(f"[因子] {factor_name} 三年组合收益已重算。", flush=True)
         market_complete = get_state("market_history_status") == "completed"

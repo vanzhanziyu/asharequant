@@ -123,7 +123,7 @@ def init_db() -> None:
             );
             CREATE TABLE IF NOT EXISTS factor_stock_daily (
                 ts_code TEXT NOT NULL, trade_date TEXT NOT NULL,
-                close REAL NOT NULL, pct_chg REAL, total_mv REAL, adj_factor REAL,
+                open REAL, high REAL, low REAL, close REAL NOT NULL, pct_chg REAL, total_mv REAL, adj_factor REAL,
                 source TEXT NOT NULL, updated_at TEXT NOT NULL,
                 PRIMARY KEY (ts_code, trade_date)
             );
@@ -156,6 +156,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS factor_portfolio_daily (
                 factor_name TEXT NOT NULL, trade_date TEXT NOT NULL, signal_date TEXT NOT NULL,
                 holding_count INTEGER NOT NULL, daily_return_pct REAL NOT NULL, nav REAL NOT NULL,
+                open_nav REAL, high_nav REAL, low_nav REAL,
                 calculated_at TEXT NOT NULL,
                 PRIMARY KEY (factor_name, trade_date)
             );
@@ -188,6 +189,17 @@ def init_db() -> None:
                 ON limit_stocks (limit_type, trade_date DESC);
             """
         )
+        # The original factor history only retained closing prices.  Keep the
+        # migration additive so existing cloud databases retain their data
+        # while the collector progressively fills real OHLC observations.
+        def add_missing_columns(table: str, columns: tuple[tuple[str, str], ...]) -> None:
+            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for name, definition in columns:
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+        add_missing_columns("factor_stock_daily", (("open", "REAL"), ("high", "REAL"), ("low", "REAL")))
+        add_missing_columns("factor_portfolio_daily", (("open_nav", "REAL"), ("high_nav", "REAL"), ("low_nav", "REAL")))
         columns = {row[1] for row in conn.execute("PRAGMA table_info(macro_price_history)")}
         if "source" not in columns:
             conn.execute("ALTER TABLE macro_price_history ADD COLUMN source TEXT")

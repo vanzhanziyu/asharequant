@@ -60,10 +60,9 @@ export default function FactorPanel() {
       })), label: { show: true, formatter: '{b}\n{c}家', color: '#fff', fontSize: 11 }, emphasis: { disabled: true }, levels: [{ itemStyle: { borderColor: '#020617', borderWidth: 2, gapWidth: 2 } }],
     }],
   };
-  const netValueKline = rows.map((row: { nav: number }, index: number) => {
-    const open = index ? Number(rows[index - 1].nav) : 1;
-    const close = Number(row.nav);
-    return [(open - 1) * 100, (close - 1) * 100, (Math.min(open, close) - 1) * 100, (Math.max(open, close) - 1) * 100];
+  const netValueKline = rows.map((row: { nav: number; open_nav?: number; high_nav?: number; low_nav?: number }) => {
+    const values = [row.open_nav, row.nav, row.low_nav, row.high_nav].map(Number);
+    return values.every(Number.isFinite) ? values.map(value => (value - 1) * 100) : '-';
   });
   const movingAverage = (days: number) => rows.map((_: unknown, index: number) => {
     if (index < days - 1) return '-';
@@ -75,7 +74,8 @@ export default function FactorPanel() {
     legend: { data: ['组合净值 K 线', 'MA5', 'MA10', 'MA20', 'MA60'], textStyle: { color: '#94a3b8' }, top: 0 },
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross', label: { backgroundColor: '#334155' } }, backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#f8fafc' }, formatter: (items: { axisValue: string; dataIndex: number; data: number }[]) => {
       const item = items[0]; const row = rows[item?.dataIndex];
-      return !item || !row ? '' : `${item.axisValue}<br/><b>累计收益：${format(item.data)}%</b><br/>当日组合收益：${format(row.daily_return_pct)}%<br/>前一日选股：${row.signal_date}<br/>有效持仓：${row.holding_count} 只`;
+      const cumulativeReturn = row ? (Number(row.nav) - 1) * 100 : NaN;
+      return !item || !row ? '' : `${item.axisValue}<br/><b>累计收益：${Number.isFinite(cumulativeReturn) ? format(cumulativeReturn) : '--'}%</b><br/>当日组合收益：${format(row.daily_return_pct)}%<br/>前一日选股：${row.signal_date}<br/>有效持仓：${row.holding_count} 只`;
     } },
     grid: { left: 58, right: 26, top: 36, bottom: 66 },
     xAxis: { type: 'category', data: rows.map((row: { trade_date: string }) => row.trade_date), boundaryGap: false, axisLine: { lineStyle: { color: '#334155' } }, axisLabel: { color: '#94a3b8', fontSize: 10 } },

@@ -197,7 +197,7 @@ def factor_performance(factor: str = Query("market_cap_large"), days: int = Quer
     cutoff = (dt.date.today() - dt.timedelta(days=days + 15)).isoformat()
     with closing(connect()) as conn:
         rows = conn.execute(
-            """SELECT trade_date,signal_date,holding_count,daily_return_pct,nav,calculated_at
+            """SELECT trade_date,signal_date,holding_count,daily_return_pct,nav,open_nav,high_nav,low_nav,calculated_at
                FROM factor_portfolio_daily WHERE factor_name=? AND trade_date>=? ORDER BY trade_date""", (factor, cutoff),
         ).fetchall()
         progress = factor_progress(conn)
