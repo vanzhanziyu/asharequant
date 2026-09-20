@@ -412,7 +412,7 @@ def sync_fundamentals() -> None:
         LOCK.release()
 
 
-def calculate_performance() -> None:
+def calculate_performance(factor_names: tuple[str, ...] = FACTORS) -> None:
     """Build equal-weight, next-trading-day forward-adjusted factor returns."""
     if not LOCK.acquire(blocking=False):
         return
@@ -425,7 +425,7 @@ def calculate_performance() -> None:
             )]
         if len(dates) < 2:
             return
-        for factor_name in FACTORS:
+        for factor_name in factor_names:
             nav = 1.0
             with connect() as conn:
                 conn.execute("DELETE FROM factor_portfolio_daily WHERE factor_name=? AND trade_date>=?", (factor_name, dates[1]))
@@ -491,6 +491,7 @@ if __name__ == "__main__":
     parser.add_argument("--history-batch", action="store_true")
     parser.add_argument("--fundamentals", action="store_true")
     parser.add_argument("--performance", action="store_true")
+    parser.add_argument("--performance-factors", default="", help="逗号分隔的需重算因子")
     args = parser.parse_args()
     if args.current:
         sync_current()
@@ -498,7 +499,8 @@ if __name__ == "__main__":
         sync_market_history_batch()
     elif args.fundamentals:
         sync_fundamentals()
-    elif args.performance:
-        calculate_performance()
+    elif args.performance or args.performance_factors:
+        selected = tuple(item.strip() for item in args.performance_factors.split(",") if item.strip()) or FACTORS
+        calculate_performance(selected)
     else:
         start_scheduler()
