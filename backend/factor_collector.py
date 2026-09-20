@@ -14,6 +14,7 @@ import os
 import threading
 import time
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
@@ -81,14 +82,18 @@ def sync_trade_calendar(client) -> list[str]:
     if dates:
         with connect() as conn:
             conn.executemany("INSERT OR IGNORE INTO factor_trade_calendar (trade_date) VALUES (?)", [(value,) for value in dates])
+        cached_trade_dates.cache_clear()
+        previous_trade_date.cache_clear()
     return dates
 
 
+@lru_cache(maxsize=1)
 def cached_trade_dates() -> list[str]:
     with connect() as conn:
         return [row["trade_date"] for row in conn.execute("SELECT trade_date FROM factor_trade_calendar ORDER BY trade_date")]
 
 
+@lru_cache(maxsize=10_000)
 def previous_trade_date(date: str, offset: int) -> str | None:
     dates = cached_trade_dates()
     if not dates:
