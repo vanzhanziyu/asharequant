@@ -23,6 +23,7 @@ const factors = [
 ] as const;
 type FactorName = typeof factors[number][0];
 const format = (value: unknown, digits = 2) => value === null || value === undefined ? '--' : Number(value).toLocaleString('zh-CN', { maximumFractionDigits: digits });
+const percent = (value: unknown) => value === null || value === undefined ? '--' : `${Number(value).toFixed(2)}%`;
 
 export default function FactorPanel() {
   const [page, setPage] = React.useState<'pool' | 'performance'>('pool');
@@ -38,6 +39,7 @@ export default function FactorPanel() {
   const stocks = pool.data?.stocks || [];
   const filteredStocks = industry ? stocks.filter((stock: Record<string, string>) => stock.industry === industry) : stocks;
   const rows = performance.data?.list || [];
+  const stats = performance.data?.stats;
   const progress = pool.data?.progress || performance.data?.progress;
   const available = Number(pool.data?.universe_count || 0);
   const sourceReady = factor.startsWith('market_cap') ? progress?.universe || 0 : factor === 'dividend_yield' ? progress?.dividend_ready || 0 : progress?.financial_ready || 0;
@@ -58,17 +60,34 @@ export default function FactorPanel() {
       })), label: { show: true, formatter: '{b}\n{c}家', color: '#fff', fontSize: 11 }, emphasis: { disabled: true }, levels: [{ itemStyle: { borderColor: '#020617', borderWidth: 2, gapWidth: 2 } }],
     }],
   };
+  const netValueKline = rows.map((row: { nav: number }, index: number) => {
+    const open = index ? Number(rows[index - 1].nav) : 1;
+    const close = Number(row.nav);
+    return [(open - 1) * 100, (close - 1) * 100, (Math.min(open, close) - 1) * 100, (Math.max(open, close) - 1) * 100];
+  });
+  const movingAverage = (days: number) => rows.map((_: unknown, index: number) => {
+    if (index < days - 1) return '-';
+    const total = rows.slice(index - days + 1, index + 1).reduce((sum: number, item: { nav: number }) => sum + Number(item.nav), 0);
+    return (total / days - 1) * 100;
+  });
   const performanceOption = {
     animation: false,
+    legend: { data: ['组合净值 K 线', 'MA5', 'MA10', 'MA20', 'MA60'], textStyle: { color: '#94a3b8' }, top: 0 },
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross', label: { backgroundColor: '#334155' } }, backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#f8fafc' }, formatter: (items: { axisValue: string; dataIndex: number; data: number }[]) => {
       const item = items[0]; const row = rows[item?.dataIndex];
       return !item || !row ? '' : `${item.axisValue}<br/><b>累计收益：${format(item.data)}%</b><br/>当日组合收益：${format(row.daily_return_pct)}%<br/>前一日选股：${row.signal_date}<br/>有效持仓：${row.holding_count} 只`;
     } },
-    grid: { left: 58, right: 26, top: 24, bottom: 66 },
+    grid: { left: 58, right: 26, top: 36, bottom: 66 },
     xAxis: { type: 'category', data: rows.map((row: { trade_date: string }) => row.trade_date), boundaryGap: false, axisLine: { lineStyle: { color: '#334155' } }, axisLabel: { color: '#94a3b8', fontSize: 10 } },
     yAxis: { type: 'value', scale: true, name: '累计收益 (%)', nameTextStyle: { color: '#94a3b8' }, splitLine: { lineStyle: { color: '#1e293b' } }, axisLabel: { color: '#94a3b8', formatter: '{value}%' } },
     dataZoom: [{ type: 'inside', xAxisIndex: 0, start: 0, end: 100, zoomOnMouseWheel: true, moveOnMouseWheel: true, moveOnMouseMove: true }, { type: 'slider', xAxisIndex: 0, start: 0, end: 100, bottom: 12, height: 22, borderColor: '#475569', fillerColor: '#38bdf844', handleStyle: { color: '#38bdf8' }, textStyle: { color: '#94a3b8' } }],
-    series: [{ name: '累计收益', type: 'line', showSymbol: false, data: rows.map((row: { nav: number }) => (Number(row.nav) - 1) * 100), lineStyle: { color: '#38bdf8', width: 2.2 }, areaStyle: { color: '#38bdf822' } }],
+    series: [
+      { name: '组合净值 K 线', type: 'candlestick', data: netValueKline, itemStyle: { color: '#f43f5e', color0: '#10b981', borderColor: '#f43f5e', borderColor0: '#10b981' } },
+      { name: 'MA5', type: 'line', showSymbol: false, data: movingAverage(5), lineStyle: { color: '#facc15', width: 1.4 } },
+      { name: 'MA10', type: 'line', showSymbol: false, data: movingAverage(10), lineStyle: { color: '#fb923c', width: 1.4 } },
+      { name: 'MA20', type: 'line', showSymbol: false, data: movingAverage(20), lineStyle: { color: '#38bdf8', width: 1.5 } },
+      { name: 'MA60', type: 'line', showSymbol: false, data: movingAverage(60), lineStyle: { color: '#a78bfa', width: 1.5 } },
+    ],
   };
   return <section className={styles.panel}>
     <div className={styles.topbar}><div className={styles.pageTabs}><button className={`${styles.pageButton} ${page === 'pool' ? styles.active : ''}`} onClick={() => setPage('pool')}>因子股票池</button><button className={`${styles.pageButton} ${page === 'performance' ? styles.active : ''}`} onClick={() => setPage('performance')}>因子收益率走势</button></div><span className={styles.status}>{currentStatus}</span></div>
@@ -82,7 +101,7 @@ export default function FactorPanel() {
         {!filteredStocks.length && <tr><td colSpan={6} className={styles.empty}>暂未形成可用样本；{sourceLabel}已回补 {Number(sourceReady).toLocaleString('zh-CN')}/{Number(progress?.universe || 0).toLocaleString('zh-CN')} 只，新的可用股票会自动显示。</td></tr>}
       </tbody></table></div>
     </> : <>
-      <div className={styles.chartHead}><b>近三年等权组合累计收益</b></div>
+      <div className={styles.chartHead}><b>近三年组合净值</b><div className={styles.stats}><span>最大回撤 <strong>{percent(stats?.max_drawdown_pct)}</strong></span><span>夏普比率 <strong>{format(stats?.sharpe_ratio)}</strong></span><span>近30日标准差 <strong>{percent(stats?.stddev_30d_pct)}</strong></span></div></div>
       <div className={styles.chart}><ReactECharts option={performanceOption} notMerge style={{ height: '100%' }} /></div>
       {!rows.length && <div className={styles.pending}>收益序列会随已回补的行情和因子样本逐步生成，页面会每 30 秒自动刷新。</div>}
     </>}

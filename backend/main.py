@@ -3,6 +3,8 @@ from __future__ import annotations
 import datetime as dt
 from collections import Counter
 from contextlib import closing
+from math import sqrt
+from statistics import stdev
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -120,6 +122,36 @@ def factor_progress(conn) -> dict:
     }
 
 
+def factor_performance_stats(records: list[dict]) -> dict:
+    """Summary metrics from daily equal-weight portfolio returns.
+
+    Sharpe is annualised from daily returns with a zero risk-free rate; the
+    30-day standard deviation stays in daily percentage terms.
+    """
+    if not records:
+        return {"max_drawdown_pct": None, "sharpe_ratio": None, "stddev_30d_pct": None}
+    peak, maximum_drawdown = 0.0, 0.0
+    returns: list[float] = []
+    for item in records:
+        nav = num(item.get("nav"))
+        if nav > 0:
+            peak = max(peak, nav)
+            maximum_drawdown = min(maximum_drawdown, nav / peak - 1) if peak else maximum_drawdown
+        returns.append(num(item.get("daily_return_pct")) / 100)
+    sharpe = None
+    if len(returns) > 1:
+        deviation = stdev(returns)
+        if deviation > 0:
+            sharpe = sum(returns) / len(returns) / deviation * sqrt(252)
+    recent = returns[-30:]
+    stddev_30 = stdev(recent) * 100 if len(recent) > 1 else None
+    return {
+        "max_drawdown_pct": round(maximum_drawdown * 100, 2),
+        "sharpe_ratio": round(sharpe, 2) if sharpe is not None else None,
+        "stddev_30d_pct": round(stddev_30, 2) if stddev_30 is not None else None,
+    }
+
+
 @app.get("/api/factors/status")
 def factors_status():
     with closing(connect()) as conn:
@@ -168,7 +200,10 @@ def factor_performance(factor: str = Query("market_cap_large"), days: int = Quer
         ).fetchall()
         progress = factor_progress(conn)
     records = [{key: (row[key] if key in ("trade_date", "signal_date", "calculated_at") else num(row[key])) for key in row.keys()} for row in rows]
-    return {"factor": factor, "name": FACTOR_LABELS[factor], "list": records, "progress": progress, "portfolio_size": 100}
+    return {
+        "factor": factor, "name": FACTOR_LABELS[factor], "list": records,
+        "stats": factor_performance_stats(records), "progress": progress, "portfolio_size": 100,
+    }
 
 
 @app.get("/api/vix")
