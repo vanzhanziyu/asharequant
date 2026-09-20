@@ -125,8 +125,9 @@ def factor_progress(conn) -> dict:
 def factor_performance_stats(records: list[dict]) -> dict:
     """Summary metrics from daily equal-weight portfolio returns.
 
-    Sharpe is annualised from daily returns with a zero risk-free rate; the
-    30-day standard deviation stays in daily percentage terms.
+    Sharpe is annualised from daily excess returns using a 1.5% annual
+    risk-free rate; the 30-day standard deviation stays in daily percentage
+    terms.
     """
     if not records:
         return {"max_drawdown_pct": None, "sharpe_ratio": None, "stddev_30d_pct": None}
@@ -142,7 +143,8 @@ def factor_performance_stats(records: list[dict]) -> dict:
     if len(returns) > 1:
         deviation = stdev(returns)
         if deviation > 0:
-            sharpe = sum(returns) / len(returns) / deviation * sqrt(252)
+            daily_risk_free = (1.015 ** (1 / 252)) - 1
+            sharpe = (sum(returns) / len(returns) - daily_risk_free) / deviation * sqrt(252)
     recent = returns[-30:]
     stddev_30 = stdev(recent) * 100 if len(recent) > 1 else None
     return {
