@@ -24,6 +24,7 @@ const factors = [
 type FactorName = typeof factors[number][0];
 const MA_PERIODS = [5, 10, 20, 60] as const;
 const MA_STORAGE_KEY = 'ashare-factor-visible-moving-averages-v1';
+const FACTOR_TAB_STORAGE_KEY = 'ashare-factor-selected-tabs-v1';
 const DEFAULT_VISIBLE_MAS: Record<number, boolean> = { 5: true, 10: true, 20: true, 60: true };
 const format = (value: unknown, digits = 2) => value === null || value === undefined ? '--' : Number(value).toLocaleString('zh-CN', { maximumFractionDigits: digits });
 const percent = (value: unknown) => value === null || value === undefined ? '--' : `${Number(value).toFixed(2)}%`;
@@ -36,6 +37,23 @@ export default function FactorPanel() {
   const [industry, setIndustry] = React.useState<string | null>(null);
   const [visibleMas, setVisibleMas] = React.useState<Record<number, boolean>>(DEFAULT_VISIBLE_MAS);
   const [maPreferenceLoaded, setMaPreferenceLoaded] = React.useState(false);
+  const [tabPreferenceLoaded, setTabPreferenceLoaded] = React.useState(false);
+  React.useEffect(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(FACTOR_TAB_STORAGE_KEY) || '{}');
+      const savedFactor = factors.find(([key]) => key === saved.factor);
+      if (saved.page === 'pool' || saved.page === 'performance') setPage(saved.page);
+      if (savedFactor) {
+        setFactor(savedFactor[0]);
+        setRank(savedFactor[2]);
+        setRankInput(String(savedFactor[2]));
+      }
+    } catch { /* Use the default factor page and type. */ }
+    setTabPreferenceLoaded(true);
+  }, []);
+  React.useEffect(() => {
+    if (tabPreferenceLoaded) window.localStorage.setItem(FACTOR_TAB_STORAGE_KEY, JSON.stringify({ page, factor }));
+  }, [tabPreferenceLoaded, page, factor]);
   React.useEffect(() => {
     try {
       const saved = JSON.parse(window.localStorage.getItem(MA_STORAGE_KEY) || '{}');

@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import ReactECharts from 'echarts-for-react';
 import useSWR from 'swr';
 import MacroPanel from './MacroPanel';
@@ -16,6 +16,8 @@ const API = process.env.NEXT_PUBLIC_API_BASE_URL ||
 const fetcher = (url: string) => fetch(url).then(async res => { if (!res.ok) throw new Error(`请求失败 (${res.status})`); return res.json(); });
 type Item = Record<string, number | string | null>;
 type Pool = { date: string; stocks: Item[]; industry_summary: { industry: string; count: number }[] };
+const PRICE_INDEX_STORAGE_KEY = 'ashare-price-selected-index-v1';
+const INDICES = [['000001.SH', '上证指数'], ['000688.SH', '科创50'], ['000015.SH', '红利指数'], ['399102.SZ', '创业板综'], ['8841423.WI', 'Wind微盘']] as const;
 const format = (v: unknown) => Number(v || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
 const diffClass = (v: number) => v >= 0 ? 'up' : 'down';
 
@@ -48,6 +50,15 @@ function MetricCard({ title, date, value, diff, rows, field, color, detail, wide
 export default function Dashboard() {
   const [view, setView] = useState<'emotion' | 'price' | 'macro' | 'vix' | 'factor'>('emotion'); const [poolType, setPoolType] = useState<'limit_up' | 'limit_down'>('limit_up');
   const [industry, setIndustry] = useState<string | null>(null); const [index, setIndex] = useState('000001.SH');
+  const [pricePreferenceLoaded, setPricePreferenceLoaded] = useState(false);
+  useEffect(() => {
+    const savedIndex = window.localStorage.getItem(PRICE_INDEX_STORAGE_KEY);
+    if (INDICES.some(([code]) => code === savedIndex)) setIndex(savedIndex as string);
+    setPricePreferenceLoaded(true);
+  }, []);
+  useEffect(() => {
+    if (pricePreferenceLoaded) window.localStorage.setItem(PRICE_INDEX_STORAGE_KEY, index);
+  }, [pricePreferenceLoaded, index]);
   const overview = useSWR(`${API}/api/turnover/overview`, fetcher, { refreshInterval: 30000 });
   const history = useSWR(`${API}/api/turnover/history?days=365`, fetcher); const margin = useSWR(`${API}/api/margin`, fetcher);
   const up = useSWR(`${API}/api/limit_stocks?limit_type=limit_up`, fetcher, { refreshInterval: 30000 }); const down = useSWR(`${API}/api/limit_stocks?limit_type=limit_down`, fetcher, { refreshInterval: 30000 });
@@ -58,7 +69,6 @@ export default function Dashboard() {
   const selectedStocks = industry ? currentPool.stocks.filter(stock => stock.industry === industry) : currentPool.stocks;
   const refresh = () => [overview, history, margin, up, down, kline, treasury, usdcnh, dollar, gold].forEach(request => request.mutate());
   const errors = [overview.error, history.error, margin.error, up.error, down.error, kline.error, treasury.error, usdcnh.error, dollar.error, gold.error].filter(Boolean);
-  const indices = [['000001.SH', '上证指数'], ['000688.SH', '科创50'], ['000015.SH', '红利指数'], ['399102.SZ', '创业板综'], ['8841423.WI', 'Wind微盘']];
   const treemap = { backgroundColor: 'transparent', tooltip: { formatter: '{b}: {c} 家', backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#f8fafc' } }, series: [{ type: 'treemap', nodeClick: false, selectedMode: false, roam: false, breadcrumb: { show: false }, upperLabel: { show: false }, data: currentPool.industry_summary.filter(x => x.count > 0).map((x, position) => ({ name: x.industry, value: x.count, itemStyle: { color: poolType === 'limit_up' ? ['#be123c', '#e11d48', '#f43f5e'][position % 3] : ['#047857', '#059669', '#10b981'][position % 3], borderColor: industry === x.industry ? '#38bdf8' : '#020617', borderWidth: industry === x.industry ? 3 : 2, gapWidth: 2 } })), label: { show: true, formatter: '{b}\n{c}家', color: '#fff', fontSize: 11 }, emphasis: { disabled: true }, levels: [{ itemStyle: { borderColor: '#020617', borderWidth: 2, gapWidth: 2 } }] }] };
   const kRows: Item[] = kline.data?.list || []; const kOption = { tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } }, legend: { data: ['K线', '成交量'], textStyle: { color: '#94a3b8' } }, grid: [{ left: 55, right: 20, top: 40, height: '58%' }, { left: 55, right: 20, top: '75%', height: '15%' }], xAxis: [{ type: 'category', data: kRows.map(x => x.trade_date), axisLabel: { color: '#64748b' } }, { type: 'category', gridIndex: 1, data: kRows.map(x => x.trade_date), axisLabel: { show: false } }], yAxis: [{ scale: true, splitLine: { lineStyle: { color: '#1e293b' } }, axisLabel: { color: '#94a3b8' } }, { gridIndex: 1, scale: true, axisLabel: { show: false }, splitLine: { show: false } }], dataZoom: [{ type: 'inside', xAxisIndex: [0, 1], start: 55, end: 100 }, { type: 'slider', xAxisIndex: [0, 1], bottom: 8, height: 18 }], series: [{ name: 'K线', type: 'candlestick', data: kRows.map(x => [x.open, x.close, x.low, x.high]), itemStyle: { color: '#f43f5e', color0: '#10b981', borderColor: '#f43f5e', borderColor0: '#10b981' } }, { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: kRows.map(x => ({ value: x.volume, itemStyle: { color: Number(x.close) >= Number(x.open) ? '#f43f5e' : '#10b981' } })) }] };
   return <main className="dashboard"><header className="header"><div><h1 className="title">A 股市场监控终端</h1><p className="subtitle">数据基准日：{currentPool.date || data.standard_date || '等待采集数据'}</p></div><div className="tabs"><button className={`button ${view === 'emotion' ? 'active' : ''}`} onClick={() => setView('emotion')}>市场情绪</button><button className={`button ${view === 'price' ? 'active' : ''}`} onClick={() => setView('price')}>价格走势 K 线</button><button className={`button ${view === 'vix' ? 'active' : ''}`} onClick={() => setView('vix')}>波动率走势</button><button className={`button ${view === 'factor' ? 'active' : ''}`} onClick={() => setView('factor')}>因子选股</button><button className={`button ${view === 'macro' ? 'active' : ''}`} onClick={() => setView('macro')}>全球宏观</button><button className="button" onClick={refresh}>刷新数据</button></div></header>
@@ -73,5 +83,5 @@ export default function Dashboard() {
     </div></div><section className="pool"><div className="pool-head"><button className={`button ${poolType === 'limit_up' ? 'active' : ''}`} onClick={() => { setPoolType('limit_up'); setIndustry(null); }}>涨停股池 ({up.data?.stocks?.length || 0})</button><button className={`button ${poolType === 'limit_down' ? 'active' : ''}`} onClick={() => { setPoolType('limit_down'); setIndustry(null); }}>跌停股池 ({down.data?.stocks?.length || 0})</button>{industry && <button className="filter" onClick={() => setIndustry(null)}>取消行业筛选：{industry}</button>}</div>
       <div className="treemap"><ReactECharts option={treemap} notMerge style={{ height: '100%' }} onEvents={{ click: (p: { name?: string }) => p.name && setIndustry(industry === p.name ? null : p.name) }} /></div>
       <div className="table-wrap"><table><thead><tr><th>代码</th><th>名称</th><th>最新价</th><th>涨跌幅</th><th>连板</th><th>行业</th><th>首封时间</th></tr></thead><tbody>{selectedStocks.map((stock, i) => { const stockPage = `https://stockpage.10jqka.com.cn/${stock.stock_code}/`; return <tr key={`${stock.stock_code}-${i}`}><td><a href={stockPage} target="_blank" rel="noreferrer">{stock.stock_code}</a></td><td><a href={stockPage} target="_blank" rel="noreferrer">{stock.stock_name}</a></td><td>{format(stock.last_price)}</td><td className={poolType === 'limit_up' ? 'up' : 'down'}>{Number(stock.change_pct) > 0 ? '+' : ''}{format(stock.change_pct)}%</td><td>{stock.limit_num} 连板</td><td>{stock.industry}</td><td>{stock.first_limit_time || '--'}</td></tr>; })}{!selectedStocks.length && <tr><td colSpan={7} className="empty">暂无相关股票数据</td></tr>}</tbody></table></div>
-    </section></div> : view === 'price' ? <section className="price"><div className="index-tabs">{indices.map(([code, name]) => <button key={code} className={`button ${index === code ? 'active' : ''}`} onClick={() => setIndex(code)}>{name}</button>)}</div><div className="price-chart"><ReactECharts option={kOption} style={{ height: '100%' }} /></div></section> : view === 'vix' ? <VixPanel /> : view === 'factor' ? <FactorPanel /> : <MacroPanel treasury={treasury.data?.list || []} usdcnh={usdcnh.data?.list || []} dollar={dollar.data?.list || []} gold={gold.data?.list || []} />}</main>;
+    </section></div> : view === 'price' ? <section className="price"><div className="index-tabs">{INDICES.map(([code, name]) => <button key={code} className={`button ${index === code ? 'active' : ''}`} onClick={() => setIndex(code)}>{name}</button>)}</div><div className="price-chart"><ReactECharts option={kOption} style={{ height: '100%' }} /></div></section> : view === 'vix' ? <VixPanel /> : view === 'factor' ? <FactorPanel /> : <MacroPanel treasury={treasury.data?.list || []} usdcnh={usdcnh.data?.list || []} dollar={dollar.data?.list || []} gold={gold.data?.list || []} />}</main>;
 }
