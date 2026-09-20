@@ -36,6 +36,10 @@
 .tableWrap a { color: #7dd3fc; text-decoration: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .up { color: #fb7185; }.down { color: #34d399; }.empty, .pending { color: #64748b; text-align: center; padding: 34px; }
 .chartHead { justify-content: space-between; gap: 12px; padding: 8px 1px; color: #dbeafe; font-size: 14px; }
+.chartMeta, .maControls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.maControls { color: #94a3b8; font-size: 11px; }
+.maControls button { border: 1px solid #334155; border-radius: 6px; background: #0b1324; color: #64748b; padding: 4px 7px; cursor: pointer; font-size: 11px; }
+.maControls button.active { border-color: #38bdf8; background: #0c4a6e; color: #e0f2fe; }
 .stats { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .stats span { padding: 4px 8px; border: 1px solid #334155; border-radius: 6px; color: #94a3b8; font-size: 11px; }
 .stats strong { margin-left: 5px; color: #f8fafc; font-variant-numeric: tabular-nums; }
@@ -43,6 +47,7 @@
 
 @media (max-width: 760px) {
   .topbar, .heading, .chartHead { align-items: flex-start; flex-direction: column; }
+  .chartMeta { align-items: flex-start; flex-direction: column; }
   .status { white-space: normal; }.rankForm { width: 100%; justify-content: space-between; }
   .treemap { height: 260px; }.tableWrap { height: 460px; }.chart { height: 460px; min-height: 460px; }
 }

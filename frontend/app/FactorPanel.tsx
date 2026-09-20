@@ -22,6 +22,9 @@ const factors = [
   ['ebitda_cagr', 'EBITDA 增速', 100],
 ] as const;
 type FactorName = typeof factors[number][0];
+const MA_PERIODS = [5, 10, 20, 60] as const;
+const MA_STORAGE_KEY = 'ashare-factor-visible-moving-averages-v1';
+const DEFAULT_VISIBLE_MAS: Record<number, boolean> = { 5: true, 10: true, 20: true, 60: true };
 const format = (value: unknown, digits = 2) => value === null || value === undefined ? '--' : Number(value).toLocaleString('zh-CN', { maximumFractionDigits: digits });
 const percent = (value: unknown) => value === null || value === undefined ? '--' : `${Number(value).toFixed(2)}%`;
 
@@ -31,6 +34,18 @@ export default function FactorPanel() {
   const [rankInput, setRankInput] = React.useState('100');
   const [rank, setRank] = React.useState(100);
   const [industry, setIndustry] = React.useState<string | null>(null);
+  const [visibleMas, setVisibleMas] = React.useState<Record<number, boolean>>(DEFAULT_VISIBLE_MAS);
+  const [maPreferenceLoaded, setMaPreferenceLoaded] = React.useState(false);
+  React.useEffect(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(MA_STORAGE_KEY) || '{}');
+      setVisibleMas({ ...DEFAULT_VISIBLE_MAS, ...Object.fromEntries(MA_PERIODS.map(period => [period, typeof saved[period] === 'boolean' ? saved[period] : DEFAULT_VISIBLE_MAS[period]])) });
+    } catch { setVisibleMas(DEFAULT_VISIBLE_MAS); }
+    setMaPreferenceLoaded(true);
+  }, []);
+  React.useEffect(() => {
+    if (maPreferenceLoaded) window.localStorage.setItem(MA_STORAGE_KEY, JSON.stringify(visibleMas));
+  }, [maPreferenceLoaded, visibleMas]);
   // New samples arrive while the first full-universe backfill is running.
   // Keep the page live so visitors do not have to reload it manually.
   const pool = useSWR(`${API}/api/factors/pool?factor=${factor}&rank=${rank}`, fetcher, { refreshInterval: 30_000, revalidateOnFocus: true });
@@ -71,9 +86,11 @@ export default function FactorPanel() {
   });
   const recentZoomStart = rows.length > 120 ? Math.max(0, 100 - 120 / rows.length * 100) : 0;
   const navReturn = (value: unknown) => value === null || value === undefined || !Number.isFinite(Number(value)) ? '--' : percent((Number(value) - 1) * 100);
+  const maStyles: Record<number, string> = { 5: 'rgba(250,204,21,.52)', 10: 'rgba(251,146,60,.52)', 20: 'rgba(56,189,248,.58)', 60: 'rgba(167,139,250,.58)' };
+  const visibleMaPeriods = MA_PERIODS.filter(period => visibleMas[period]);
   const performanceOption = {
     animation: false,
-    legend: { data: ['组合净值 K 线', 'MA5', 'MA10', 'MA20', 'MA60'], textStyle: { color: '#94a3b8' }, top: 0 },
+    legend: { data: ['组合净值 K 线', ...visibleMaPeriods.map(period => `MA${period}`)], selectedMode: false, textStyle: { color: '#94a3b8' }, top: 0 },
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross', label: { backgroundColor: '#334155' } }, backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#f8fafc' }, formatter: (items: { axisValue: string; dataIndex: number; data: number }[]) => {
       const item = items[0]; const row = rows[item?.dataIndex];
       const cumulativeReturn = row ? (Number(row.nav) - 1) * 100 : NaN;
@@ -84,11 +101,8 @@ export default function FactorPanel() {
     yAxis: { type: 'value', scale: true, name: '累计收益 (%)', nameTextStyle: { color: '#94a3b8' }, splitLine: { lineStyle: { color: '#1e293b' } }, axisLabel: { color: '#94a3b8', formatter: '{value}%' } },
     dataZoom: [{ type: 'inside', xAxisIndex: 0, start: recentZoomStart, end: 100, zoomOnMouseWheel: true, moveOnMouseWheel: true, moveOnMouseMove: true }, { type: 'slider', xAxisIndex: 0, start: recentZoomStart, end: 100, bottom: 12, height: 22, borderColor: '#475569', fillerColor: '#38bdf844', handleStyle: { color: '#38bdf8' }, textStyle: { color: '#94a3b8' } }],
     series: [
-      { name: '组合净值 K 线', type: 'candlestick', data: netValueKline, itemStyle: { color: '#f43f5e', color0: '#10b981', borderColor: '#f43f5e', borderColor0: '#10b981' } },
-      { name: 'MA5', type: 'line', showSymbol: false, data: movingAverage(5), lineStyle: { color: '#facc15', width: 1.4 } },
-      { name: 'MA10', type: 'line', showSymbol: false, data: movingAverage(10), lineStyle: { color: '#fb923c', width: 1.4 } },
-      { name: 'MA20', type: 'line', showSymbol: false, data: movingAverage(20), lineStyle: { color: '#38bdf8', width: 1.5 } },
-      { name: 'MA60', type: 'line', showSymbol: false, data: movingAverage(60), lineStyle: { color: '#a78bfa', width: 1.5 } },
+      { name: '组合净值 K 线', type: 'candlestick', data: netValueKline, barMinWidth: 4, barMaxWidth: 16, itemStyle: { color: 'rgba(244,63,94,.78)', color0: 'rgba(16,185,129,.78)', borderColor: '#fb7185', borderColor0: '#34d399', borderWidth: 1.4 }, emphasis: { itemStyle: { borderWidth: 2 } } },
+      ...visibleMaPeriods.map(period => ({ name: `MA${period}`, type: 'line', showSymbol: false, data: movingAverage(period), lineStyle: { color: maStyles[period], width: 1.35 }, itemStyle: { color: maStyles[period] }, z: 3 })),
     ],
   };
   return <section className={styles.panel}>
@@ -103,7 +117,7 @@ export default function FactorPanel() {
         {!filteredStocks.length && <tr><td colSpan={6} className={styles.empty}>暂未形成可用样本；{sourceLabel}已回补 {Number(sourceReady).toLocaleString('zh-CN')}/{Number(progress?.universe || 0).toLocaleString('zh-CN')} 只，新的可用股票会自动显示。</td></tr>}
       </tbody></table></div>
     </> : <>
-      <div className={styles.chartHead}><b>近三年组合净值</b><div className={styles.stats}><span>最大回撤 <strong>{percent(stats?.max_drawdown_pct)}</strong></span><span>夏普比率 <strong>{format(stats?.sharpe_ratio)}</strong></span><span>近30日标准差 <strong>{percent(stats?.stddev_30d_pct)}</strong></span></div></div>
+      <div className={styles.chartHead}><b>近三年组合净值</b><div className={styles.chartMeta}><div className={styles.maControls}><span>均线</span>{MA_PERIODS.map(period => <button key={period} className={visibleMas[period] ? styles.active : ''} onClick={() => setVisibleMas(currentMas => ({ ...currentMas, [period]: !currentMas[period] }))}>MA{period}</button>)}</div><div className={styles.stats}><span>最大回撤 <strong>{percent(stats?.max_drawdown_pct)}</strong></span><span>夏普比率 <strong>{format(stats?.sharpe_ratio)}</strong></span><span>近30日标准差 <strong>{percent(stats?.stddev_30d_pct)}</strong></span></div></div></div>
       <div className={styles.chart}><ReactECharts option={performanceOption} notMerge style={{ height: '100%' }} /></div>
       {!rows.length && <div className={styles.pending}>收益序列会随已回补的行情和因子样本逐步生成，页面会每 30 秒自动刷新。</div>}
     </>}
