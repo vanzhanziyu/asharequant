@@ -201,7 +201,13 @@ def factor_performance(factor: str = Query("market_cap_large"), days: int = Quer
                FROM factor_portfolio_daily WHERE factor_name=? AND trade_date>=? ORDER BY trade_date""", (factor, cutoff),
         ).fetchall()
         progress = factor_progress(conn)
-    records = [{key: (row[key] if key in ("trade_date", "signal_date", "calculated_at") else num(row[key])) for key in row.keys()} for row in rows]
+    nullable_ohlc = {"open_nav", "high_nav", "low_nav"}
+    records = [{
+        key: (row[key] if key in ("trade_date", "signal_date", "calculated_at")
+              else None if key in nullable_ohlc and row[key] is None
+              else num(row[key]))
+        for key in row.keys()
+    } for row in rows]
     return {
         "factor": factor, "name": FACTOR_LABELS[factor], "list": records,
         "stats": factor_performance_stats(records), "progress": progress, "portfolio_size": 100,

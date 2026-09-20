@@ -379,6 +379,7 @@ def sync_current() -> bool:
 def sync_market_history_batch() -> None:
     if not LOCK.acquire(blocking=False):
         return
+    updated = False
     try:
         init_db(); client = tushare_client(); dates = sync_trade_calendar(client)
         cutoff = (dt.date.today() - dt.timedelta(days=HISTORY_DAYS)).isoformat()
@@ -399,11 +400,16 @@ def sync_market_history_batch() -> None:
             count = store_daily_for_date(client, trade_date)
             print(f"[因子] 历史行情 {trade_date}：{count} 只。", flush=True)
             time.sleep(0.25)
+        updated = True
         set_state("market_history_status", f"backfilling:{len(have) + len(missing)}/{len(target)}")
     except Exception as exc:
         print(f"[因子] 历史行情回补失败：{exc}", flush=True)
     finally:
         LOCK.release()
+    # Make newly received real OHLC bars visible promptly instead of waiting
+    # for the separate 20-minute portfolio-return schedule.
+    if updated:
+        calculate_performance()
 
 
 def sync_fundamentals() -> None:
@@ -502,6 +508,7 @@ def start_scheduler() -> None:
     scheduler = BlockingScheduler(timezone="Asia/Shanghai", job_defaults={"coalesce": True, "misfire_grace_time": 86400})
     opts = {"coalesce": True, "misfire_grace_time": 86400, "max_instances": 1}
     scheduler.add_job(sync_current, "date", run_date=dt.datetime.now(), id="factor_start_current", **opts)
+    scheduler.add_job(sync_market_history_batch, "date", run_date=dt.datetime.now() + dt.timedelta(seconds=30), id="factor_start_history", **opts)
     scheduler.add_job(sync_current, "cron", day_of_week="mon-fri", hour="16", minute="20", id="factor_post_close", **opts)
     scheduler.add_job(sync_market_history_batch, "interval", minutes=5, id="factor_history", **opts)
     scheduler.add_job(sync_fundamentals, "interval", minutes=2, id="factor_fundamentals", **opts)

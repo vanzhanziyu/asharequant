@@ -61,7 +61,7 @@ export default function FactorPanel() {
     }],
   };
   const netValueKline = rows.map((row: { nav: number; open_nav?: number; high_nav?: number; low_nav?: number }) => {
-    const values = [row.open_nav, row.nav, row.low_nav, row.high_nav].map(Number);
+    const values = [row.open_nav, row.nav, row.low_nav, row.high_nav].map(value => value === null || value === undefined ? NaN : Number(value));
     return values.every(Number.isFinite) ? values.map(value => (value - 1) * 100) : '-';
   });
   const movingAverage = (days: number) => rows.map((_: unknown, index: number) => {
