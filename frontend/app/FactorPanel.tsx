@@ -69,18 +69,20 @@ export default function FactorPanel() {
     const total = rows.slice(index - days + 1, index + 1).reduce((sum: number, item: { nav: number }) => sum + Number(item.nav), 0);
     return (total / days - 1) * 100;
   });
+  const recentZoomStart = rows.length > 120 ? Math.max(0, 100 - 120 / rows.length * 100) : 0;
+  const navReturn = (value: unknown) => value === null || value === undefined || !Number.isFinite(Number(value)) ? '--' : percent((Number(value) - 1) * 100);
   const performanceOption = {
     animation: false,
     legend: { data: ['组合净值 K 线', 'MA5', 'MA10', 'MA20', 'MA60'], textStyle: { color: '#94a3b8' }, top: 0 },
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross', label: { backgroundColor: '#334155' } }, backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#f8fafc' }, formatter: (items: { axisValue: string; dataIndex: number; data: number }[]) => {
       const item = items[0]; const row = rows[item?.dataIndex];
       const cumulativeReturn = row ? (Number(row.nav) - 1) * 100 : NaN;
-      return !item || !row ? '' : `${item.axisValue}<br/><b>累计收益：${Number.isFinite(cumulativeReturn) ? format(cumulativeReturn) : '--'}%</b><br/>当日组合收益：${format(row.daily_return_pct)}%<br/>前一日选股：${row.signal_date}<br/>有效持仓：${row.holding_count} 只`;
+      return !item || !row ? '' : `${item.axisValue}<br/><b>累计收益：${Number.isFinite(cumulativeReturn) ? format(cumulativeReturn) : '--'}%</b><br/>开：${navReturn(row.open_nav)}　高：${navReturn(row.high_nav)}<br/>低：${navReturn(row.low_nav)}　收：${navReturn(row.nav)}<br/>当日组合收益：${format(row.daily_return_pct)}%<br/>前一日选股：${row.signal_date}<br/>有效持仓：${row.holding_count} 只`;
     } },
     grid: { left: 58, right: 26, top: 36, bottom: 66 },
     xAxis: { type: 'category', data: rows.map((row: { trade_date: string }) => row.trade_date), boundaryGap: false, axisLine: { lineStyle: { color: '#334155' } }, axisLabel: { color: '#94a3b8', fontSize: 10 } },
     yAxis: { type: 'value', scale: true, name: '累计收益 (%)', nameTextStyle: { color: '#94a3b8' }, splitLine: { lineStyle: { color: '#1e293b' } }, axisLabel: { color: '#94a3b8', formatter: '{value}%' } },
-    dataZoom: [{ type: 'inside', xAxisIndex: 0, start: 0, end: 100, zoomOnMouseWheel: true, moveOnMouseWheel: true, moveOnMouseMove: true }, { type: 'slider', xAxisIndex: 0, start: 0, end: 100, bottom: 12, height: 22, borderColor: '#475569', fillerColor: '#38bdf844', handleStyle: { color: '#38bdf8' }, textStyle: { color: '#94a3b8' } }],
+    dataZoom: [{ type: 'inside', xAxisIndex: 0, start: recentZoomStart, end: 100, zoomOnMouseWheel: true, moveOnMouseWheel: true, moveOnMouseMove: true }, { type: 'slider', xAxisIndex: 0, start: recentZoomStart, end: 100, bottom: 12, height: 22, borderColor: '#475569', fillerColor: '#38bdf844', handleStyle: { color: '#38bdf8' }, textStyle: { color: '#94a3b8' } }],
     series: [
       { name: '组合净值 K 线', type: 'candlestick', data: netValueKline, itemStyle: { color: '#f43f5e', color0: '#10b981', borderColor: '#f43f5e', borderColor0: '#10b981' } },
       { name: 'MA5', type: 'line', showSymbol: false, data: movingAverage(5), lineStyle: { color: '#facc15', width: 1.4 } },
