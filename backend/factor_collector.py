@@ -391,7 +391,9 @@ def sync_market_history_batch() -> None:
                       AND SUM(CASE WHEN open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL THEN 1 ELSE 0 END) > 1000""",
                 (cutoff,),
             )}
-        missing = [value for value in target if value not in have][:MARKET_HISTORY_BATCH_DAYS]
+        # Prioritise the latest missing sessions so the live dashboard gains
+        # usable real K bars immediately, then continue towards older history.
+        missing = [value for value in reversed(target) if value not in have][:MARKET_HISTORY_BATCH_DAYS]
         if not missing:
             set_state("market_history_status", "completed")
             rebuild_latest_snapshots()
