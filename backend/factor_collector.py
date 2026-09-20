@@ -28,7 +28,10 @@ ENV_FILE = BASE_DIR / ".env"
 HISTORY_DAYS = 365 * 3
 LOOKBACK_TRADING_DAYS = 735
 PORTFOLIO_SIZE = 100
-MARKET_HISTORY_BATCH_DAYS = 12
+# Each exchange date costs three Tushare requests.  Thirty dates stays well
+# within the account rate limit while reducing a three-year OHLC catch-up from
+# several hours to roughly two hours on the cloud host.
+MARKET_HISTORY_BATCH_DAYS = 30
 FUNDAMENTAL_BATCH_SIZE = 15
 FACTORS = ("market_cap_large", "market_cap_micro", "dividend_yield", "ebitda_cagr")
 MARKET_CAP_FACTORS = {"market_cap_large", "market_cap_micro"}
@@ -240,7 +243,23 @@ def sync_fundamental_batch(client, field: str, batch_size: int = FUNDAMENTAL_BAT
     return done
 
 
-def universe_values(factor_name: str, signal_date: str) -> list[dict]:
+def annual_ebitda_reports() -> dict[str, list[dict]]:
+    """Load annual EBITDA records once for a resumable performance rebuild."""
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT f.ts_code,f.ann_date,f.ebitda FROM factor_financial f
+               JOIN factor_stock_basic b USING(ts_code)
+               WHERE substr(f.end_date,6,5)='12-31' AND f.ebitda>0
+                 AND b.is_st=0 AND (b.ts_code LIKE '%.SH' OR b.ts_code LIKE '%.SZ')
+               ORDER BY f.ts_code,f.ann_date"""
+        ).fetchall()
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        grouped[row["ts_code"]].append(dict(row))
+    return grouped
+
+
+def universe_values(factor_name: str, signal_date: str, ebitda_reports: dict[str, list[dict]] | None = None) -> list[dict]:
     """Calculate a factor cross-section from persisted data as it was known then."""
     with connect() as conn:
         if factor_name in MARKET_CAP_FACTORS:
@@ -270,18 +289,19 @@ def universe_values(factor_name: str, signal_date: str) -> list[dict]:
                    FROM factor_stock_daily d JOIN factor_stock_basic b USING(ts_code)
                    WHERE d.trade_date=? AND b.is_st=0 AND (b.ts_code LIKE '%.SH' OR b.ts_code LIKE '%.SZ')""", (signal_date,)
             ).fetchall()
-            reports_by_code: dict[str, list] = defaultdict(list)
-            report_rows = conn.execute(
-                """SELECT f.ts_code,f.ann_date,f.ebitda FROM factor_financial f
-                   JOIN factor_stock_basic b USING(ts_code)
-                   WHERE f.ann_date<=? AND substr(f.end_date,6,5)='12-31' AND f.ebitda>0
-                     AND b.is_st=0 AND (b.ts_code LIKE '%.SH' OR b.ts_code LIKE '%.SZ')
-                   ORDER BY f.ts_code,f.ann_date""", (signal_date,)
-            ).fetchall()
-            for report in report_rows:
-                reports_by_code[report["ts_code"]].append(report)
+            reports_by_code: dict[str, list] = ebitda_reports or defaultdict(list)
+            if ebitda_reports is None:
+                report_rows = conn.execute(
+                    """SELECT f.ts_code,f.ann_date,f.ebitda FROM factor_financial f
+                       JOIN factor_stock_basic b USING(ts_code)
+                       WHERE f.ann_date<=? AND substr(f.end_date,6,5)='12-31' AND f.ebitda>0
+                         AND b.is_st=0 AND (b.ts_code LIKE '%.SH' OR b.ts_code LIKE '%.SZ')
+                       ORDER BY f.ts_code,f.ann_date""", (signal_date,)
+                ).fetchall()
+                for report in report_rows:
+                    reports_by_code[report["ts_code"]].append(report)
             for item in basic_rows:
-                reports = reports_by_code.get(item["ts_code"], [])
+                reports = [report for report in reports_by_code.get(item["ts_code"], []) if report["ann_date"] <= signal_date]
                 if len(reports) < 2:
                     continue
                 latest_date = reports[-1]["ann_date"]
@@ -302,12 +322,31 @@ def universe_values(factor_name: str, signal_date: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def selected_values(factor_name: str, signal_date: str) -> list[dict]:
+def selected_values(factor_name: str, signal_date: str, ebitda_reports: dict[str, list[dict]] | None = None) -> list[dict]:
     """Select the fixed portfolio for factors whose direction is intrinsic."""
-    values = universe_values(factor_name, signal_date)
+    values = universe_values(factor_name, signal_date, ebitda_reports)
     if factor_name == "market_cap_micro":
         return values[-PORTFOLIO_SIZE:]
     return values[:PORTFOLIO_SIZE]
+
+
+def persisted_selected_values(factor_name: str, signal_date: str) -> list[dict]:
+    """Reuse an already audited historical selection when it is complete.
+
+    Membership is independent of the newly-added OHLC fields.  Keeping it
+    avoids rebuilding a costly fundamental cross-section every time a price
+    backfill batch arrives, and makes an interrupted EBITDA rebuild resumable.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT m.ts_code,m.factor_value AS value,m.factor_rank,d.close,d.adj_factor
+               FROM factor_portfolio_members m
+               JOIN factor_stock_daily d ON d.ts_code=m.ts_code AND d.trade_date=m.signal_date
+               WHERE m.factor_name=? AND m.signal_date=?
+               ORDER BY m.factor_rank""",
+            (factor_name, signal_date),
+        ).fetchall()
+    return [dict(row) for row in rows] if len(rows) >= PORTFOLIO_SIZE else []
 
 
 def store_snapshot(factor_name: str, signal_date: str) -> int:
@@ -445,13 +484,17 @@ def calculate_performance(factor_names: tuple[str, ...] = FACTORS) -> None:
             )]
         if len(dates) < 2:
             return
+        ebitda_reports: dict[str, list[dict]] | None = None
         for factor_name in factor_names:
             nav = 1.0
             with connect() as conn:
                 conn.execute("DELETE FROM factor_portfolio_daily WHERE factor_name=? AND trade_date>=?", (factor_name, dates[1]))
-                conn.execute("DELETE FROM factor_portfolio_members WHERE factor_name=? AND signal_date>=?", (factor_name, dates[0]))
             for signal_date, trade_date in zip(dates[:-1], dates[1:]):
-                selected = selected_values(factor_name, signal_date)
+                selected = persisted_selected_values(factor_name, signal_date)
+                if not selected:
+                    if factor_name == "ebitda_cagr" and ebitda_reports is None:
+                        ebitda_reports = annual_ebitda_reports()
+                    selected = selected_values(factor_name, signal_date, ebitda_reports)
                 if not selected:
                     continue
                 codes = [item["ts_code"] for item in selected]
