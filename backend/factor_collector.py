@@ -30,7 +30,8 @@ LOOKBACK_TRADING_DAYS = 735
 PORTFOLIO_SIZE = 100
 MARKET_HISTORY_BATCH_DAYS = 12
 FUNDAMENTAL_BATCH_SIZE = 15
-FACTORS = ("market_cap", "dividend_yield", "ebitda_cagr")
+FACTORS = ("market_cap_large", "market_cap_micro", "dividend_yield", "ebitda_cagr")
+MARKET_CAP_FACTORS = {"market_cap_large", "market_cap_micro"}
 LOCK = threading.Lock()
 
 
@@ -235,7 +236,7 @@ def sync_fundamental_batch(client, field: str, batch_size: int = FUNDAMENTAL_BAT
 def universe_values(factor_name: str, signal_date: str) -> list[dict]:
     """Calculate a factor cross-section from persisted data as it was known then."""
     with connect() as conn:
-        if factor_name == "market_cap":
+        if factor_name in MARKET_CAP_FACTORS:
             rows = conn.execute(
                 """SELECT d.ts_code,d.close,d.pct_chg,d.total_mv,d.adj_factor,b.industry,d.total_mv AS value
                    FROM factor_stock_daily d JOIN factor_stock_basic b USING(ts_code)
@@ -294,6 +295,14 @@ def universe_values(factor_name: str, signal_date: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def selected_values(factor_name: str, signal_date: str) -> list[dict]:
+    """Select the fixed portfolio for factors whose direction is intrinsic."""
+    values = universe_values(factor_name, signal_date)
+    if factor_name == "market_cap_micro":
+        return values[-PORTFOLIO_SIZE:]
+    return values[:PORTFOLIO_SIZE]
+
+
 def store_snapshot(factor_name: str, signal_date: str) -> int:
     values = universe_values(factor_name, signal_date)
     # Fundamental data arrives in small batches. Keep an earlier usable
@@ -318,7 +327,12 @@ def snapshots_ready() -> dict[str, bool]:
         active = conn.execute("SELECT COUNT(*) FROM factor_stock_basic WHERE is_st=0 AND (ts_code LIKE '%.SH' OR ts_code LIKE '%.SZ')").fetchone()[0]
         dividend = conn.execute("SELECT COUNT(*) FROM factor_stock_basic WHERE is_st=0 AND (ts_code LIKE '%.SH' OR ts_code LIKE '%.SZ') AND dividend_synced_at IS NOT NULL").fetchone()[0]
         financial = conn.execute("SELECT COUNT(*) FROM factor_stock_basic WHERE is_st=0 AND (ts_code LIKE '%.SH' OR ts_code LIKE '%.SZ') AND financial_synced_at IS NOT NULL").fetchone()[0]
-    return {"market_cap": active > 0, "dividend_yield": active > 0 and dividend >= active, "ebitda_cagr": active > 0 and financial >= active}
+    return {
+        "market_cap_large": active > 0,
+        "market_cap_micro": active > 0,
+        "dividend_yield": active > 0 and dividend >= active,
+        "ebitda_cagr": active > 0 and financial >= active,
+    }
 
 
 def rebuild_latest_snapshots() -> None:
@@ -344,7 +358,8 @@ def sync_current() -> bool:
         basic_count = sync_stock_basic(client)
         latest = latest_remote_trade_date(client, dates)
         if latest:
-            store_snapshot("market_cap", latest)
+            store_snapshot("market_cap_large", latest)
+            store_snapshot("market_cap_micro", latest)
         print(f"[因子] 当前股票池更新：{basic_count} 只，行情日 {latest or '--'}。", flush=True)
         return bool(latest)
     except Exception as exc:
@@ -416,7 +431,7 @@ def calculate_performance() -> None:
                 conn.execute("DELETE FROM factor_portfolio_daily WHERE factor_name=? AND trade_date>=?", (factor_name, dates[1]))
                 conn.execute("DELETE FROM factor_portfolio_members WHERE factor_name=? AND signal_date>=?", (factor_name, dates[0]))
             for signal_date, trade_date in zip(dates[:-1], dates[1:]):
-                selected = universe_values(factor_name, signal_date)[:PORTFOLIO_SIZE]
+                selected = selected_values(factor_name, signal_date)
                 if not selected:
                     continue
                 codes = [item["ts_code"] for item in selected]

@@ -16,16 +16,17 @@ const fetcher = (url: string) => fetch(url).then(async response => {
   return response.json();
 });
 const factors = [
-  ['market_cap', '市值因子', '按总市值由高至低排名'],
-  ['dividend_yield', '纯红利因子', '三年平均股息率由高至低排名'],
-  ['ebitda_cagr', 'EBITDA 增速', '三年 EBITDA 年复合增速由高至低排名'],
+  ['market_cap_large', '大盘因子', 100],
+  ['market_cap_micro', '微盘因子', -100],
+  ['dividend_yield', '纯红利因子', 100],
+  ['ebitda_cagr', 'EBITDA 增速', 100],
 ] as const;
 type FactorName = typeof factors[number][0];
 const format = (value: unknown, digits = 2) => value === null || value === undefined ? '--' : Number(value).toLocaleString('zh-CN', { maximumFractionDigits: digits });
 
 export default function FactorPanel() {
   const [page, setPage] = React.useState<'pool' | 'performance'>('pool');
-  const [factor, setFactor] = React.useState<FactorName>('market_cap');
+  const [factor, setFactor] = React.useState<FactorName>('market_cap_large');
   const [rankInput, setRankInput] = React.useState('100');
   const [rank, setRank] = React.useState(100);
   const [industry, setIndustry] = React.useState<string | null>(null);
@@ -39,8 +40,8 @@ export default function FactorPanel() {
   const rows = performance.data?.list || [];
   const progress = pool.data?.progress || performance.data?.progress;
   const available = Number(pool.data?.universe_count || 0);
-  const sourceReady = factor === 'market_cap' ? progress?.universe || 0 : factor === 'dividend_yield' ? progress?.dividend_ready || 0 : progress?.financial_ready || 0;
-  const sourceLabel = factor === 'market_cap' ? '沪深非 ST 股票' : factor === 'dividend_yield' ? '分红资料' : '财务资料';
+  const sourceReady = factor.startsWith('market_cap') ? progress?.universe || 0 : factor === 'dividend_yield' ? progress?.dividend_ready || 0 : progress?.financial_ready || 0;
+  const sourceLabel = factor.startsWith('market_cap') ? '沪深非 ST 股票' : factor === 'dividend_yield' ? '分红资料' : '财务资料';
   const currentStatus = `已展示 ${available.toLocaleString('zh-CN')} 只可用样本 · ${sourceLabel} ${Number(sourceReady).toLocaleString('zh-CN')}/${Number(progress?.universe || 0).toLocaleString('zh-CN')} 只`;
   const submitRank = (event: React.FormEvent) => {
     event.preventDefault();
@@ -71,7 +72,7 @@ export default function FactorPanel() {
   };
   return <section className={styles.panel}>
     <div className={styles.topbar}><div className={styles.pageTabs}><button className={`${styles.pageButton} ${page === 'pool' ? styles.active : ''}`} onClick={() => setPage('pool')}>因子股票池</button><button className={`${styles.pageButton} ${page === 'performance' ? styles.active : ''}`} onClick={() => setPage('performance')}>因子收益率走势</button></div><span className={styles.status}>{currentStatus}</span></div>
-    <div className={styles.factorTabs}>{factors.map(([key, label, detail]) => <button key={key} className={`${styles.factorButton} ${factor === key ? styles.active : ''}`} title={detail} onClick={() => { setFactor(key); setIndustry(null); }}>{label}</button>)}</div>
+    <div className={styles.factorTabs}>{factors.map(([key, label, defaultRank]) => <button key={key} className={`${styles.factorButton} ${factor === key ? styles.active : ''}`} onClick={() => { setFactor(key); setRank(defaultRank); setRankInput(String(defaultRank)); setIndustry(null); }}>{label}</button>)}</div>
     <header className={styles.heading}><h2>{current[1]}</h2>{page === 'pool' && <form className={styles.rankForm} onSubmit={submitRank}><label>排名<input aria-label="因子排名筛选" value={rankInput} type="number" min="-5000" max="5000" step="1" onChange={event => setRankInput(event.target.value)} /></label><button type="submit">应用</button></form>}</header>
     {page === 'pool' ? <>
       <div className={styles.filterLine}>{industry ? <button onClick={() => setIndustry(null)}>取消行业：{industry}</button> : <span />}<b>当前 {filteredStocks.length} / {stocks.length} 只</b></div>

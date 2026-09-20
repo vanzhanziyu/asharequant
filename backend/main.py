@@ -13,7 +13,12 @@ init_db()
 app = FastAPI(title="A 股行情监控 API", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 VIX_SYMBOLS = {"510050": "50ETF", "510300": "沪深300ETF", "588080": "科创50ETF", "159915": "创业板ETF"}
-FACTOR_LABELS = {"market_cap": "市值因子", "dividend_yield": "纯红利因子", "ebitda_cagr": "EBITDA 增速"}
+FACTOR_LABELS = {
+    "market_cap_large": "大盘因子",
+    "market_cap_micro": "微盘因子",
+    "dividend_yield": "纯红利因子",
+    "ebitda_cagr": "EBITDA 增速",
+}
 
 
 def num(value: object) -> float:
@@ -122,7 +127,7 @@ def factors_status():
 
 
 @app.get("/api/factors/pool")
-def factor_pool(factor: str = Query("market_cap"), rank: int = Query(100, ge=-5000, le=5000)):
+def factor_pool(factor: str = Query("market_cap_large"), rank: int = Query(100, ge=-5000, le=5000)):
     """Current non-ST沪深 factor pool. Positive rank means top N, negative bottom N."""
     if factor not in FACTOR_LABELS or rank == 0:
         return {"error": "不支持的因子或排名筛选", "stocks": [], "industry_summary": []}
@@ -137,7 +142,7 @@ def factor_pool(factor: str = Query("market_cap"), rank: int = Query(100, ge=-50
             f"""SELECT b.stock_code,b.stock_name,s.close,s.pct_chg,s.total_mv,s.industry,s.factor_value,s.factor_rank,
                        mc.factor_rank AS market_cap_rank
                 FROM factor_universe_snapshot s JOIN factor_stock_basic b USING(ts_code)
-                LEFT JOIN factor_universe_snapshot mc ON mc.ts_code=s.ts_code AND mc.factor_name='market_cap' AND mc.signal_date=s.signal_date
+                LEFT JOIN factor_universe_snapshot mc ON mc.ts_code=s.ts_code AND mc.factor_name='market_cap_large' AND mc.signal_date=s.signal_date
                 WHERE s.factor_name=? AND s.signal_date=? AND {clause}
                 ORDER BY s.factor_rank""", (factor, latest, *params),
         ).fetchall()
@@ -152,7 +157,7 @@ def factor_pool(factor: str = Query("market_cap"), rank: int = Query(100, ge=-50
 
 
 @app.get("/api/factors/performance")
-def factor_performance(factor: str = Query("market_cap"), days: int = Query(1095, ge=30, le=1200)):
+def factor_performance(factor: str = Query("market_cap_large"), days: int = Query(1095, ge=30, le=1200)):
     if factor not in FACTOR_LABELS:
         return {"error": "不支持的因子", "list": []}
     cutoff = (dt.date.today() - dt.timedelta(days=days + 15)).isoformat()
