@@ -22,6 +22,7 @@ const factors = [
   ['ebitda_cagr', 'EBITDA 增速', 100],
 ] as const;
 type FactorName = typeof factors[number][0];
+type PoolSortKey = 'close' | 'pct_chg' | 'market_cap_rank' | 'industry';
 const MA_PERIODS = [5, 10, 20, 60] as const;
 const MA_STORAGE_KEY = 'ashare-factor-visible-moving-averages-v1';
 const FACTOR_TAB_STORAGE_KEY = 'ashare-factor-selected-tabs-v1';
@@ -35,6 +36,7 @@ export default function FactorPanel() {
   const [rankInput, setRankInput] = React.useState('100');
   const [rank, setRank] = React.useState(100);
   const [industry, setIndustry] = React.useState<string | null>(null);
+  const [poolSort, setPoolSort] = React.useState<{ key: PoolSortKey | null; direction: 'asc' | 'desc' }>({ key: null, direction: 'asc' });
   const [visibleMas, setVisibleMas] = React.useState<Record<number, boolean>>(DEFAULT_VISIBLE_MAS);
   const [maPreferenceLoaded, setMaPreferenceLoaded] = React.useState(false);
   const [tabPreferenceLoaded, setTabPreferenceLoaded] = React.useState(false);
@@ -71,6 +73,19 @@ export default function FactorPanel() {
   const current = factors.find(([key]) => key === factor) || factors[0];
   const stocks = pool.data?.stocks || [];
   const filteredStocks = industry ? stocks.filter((stock: Record<string, string>) => stock.industry === industry) : stocks;
+  const sortedStocks = React.useMemo(() => {
+    if (!poolSort.key) return filteredStocks;
+    const key = poolSort.key;
+    return [...filteredStocks].sort((left: Record<string, number | string>, right: Record<string, number | string>) => {
+      const leftValue = key === 'industry' ? String(left.industry || '其他') : Number(left[key]);
+      const rightValue = key === 'industry' ? String(right.industry || '其他') : Number(right[key]);
+      const leftMissing = key === 'market_cap_rank' && (!Number.isFinite(Number(leftValue)) || Number(leftValue) <= 0);
+      const rightMissing = key === 'market_cap_rank' && (!Number.isFinite(Number(rightValue)) || Number(rightValue) <= 0);
+      if (leftMissing || rightMissing) return leftMissing === rightMissing ? 0 : leftMissing ? 1 : -1;
+      const comparison = key === 'industry' ? String(leftValue).localeCompare(String(rightValue), 'zh-CN') : Number(leftValue) - Number(rightValue);
+      return poolSort.direction === 'asc' ? comparison : -comparison;
+    });
+  }, [filteredStocks, poolSort]);
   const rows = performance.data?.list || [];
   const stats = performance.data?.stats;
   const progress = pool.data?.progress || performance.data?.progress;
@@ -83,6 +98,8 @@ export default function FactorPanel() {
     const value = Math.trunc(Number(rankInput));
     if (Number.isFinite(value) && value !== 0) setRank(Math.max(-5000, Math.min(5000, value)));
   };
+  const togglePoolSort = (key: PoolSortKey) => setPoolSort(current => current.key === key ? { key, direction: current.direction === 'asc' ? 'desc' : 'asc' } : { key, direction: 'asc' });
+  const sortIndicator = (key: PoolSortKey) => poolSort.key === key ? (poolSort.direction === 'asc' ? ' ↑' : ' ↓') : ' ↕';
   const treemap = {
     backgroundColor: 'transparent',
     tooltip: { formatter: '{b}: {c} 家', backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#f8fafc' } },
@@ -130,9 +147,9 @@ export default function FactorPanel() {
     {page === 'pool' ? <>
       <div className={styles.filterLine}>{industry ? <button onClick={() => setIndustry(null)}>取消行业：{industry}</button> : <span />}<b>当前 {filteredStocks.length} / {stocks.length} 只</b></div>
       <div className={styles.treemap}><ReactECharts option={treemap} notMerge style={{ height: '100%' }} onEvents={{ click: (params: { name?: string }) => params.name && setIndustry(industry === params.name ? null : params.name) }} /></div>
-      <div className={styles.tableWrap}><table><thead><tr><th>股票代码</th><th>股票名称</th><th>最新收盘价</th><th>最新涨跌幅</th><th>市值排名</th><th>所属行业</th></tr></thead><tbody>
-        {filteredStocks.map((stock: Record<string, number | string>) => <tr key={String(stock.stock_code)}><td><a href={`https://stockpage.10jqka.com.cn/${stock.stock_code}/`} target="_blank" rel="noreferrer">{stock.stock_code}</a></td><td>{stock.stock_name}</td><td>{format(stock.close)}</td><td className={Number(stock.pct_chg) >= 0 ? styles.up : styles.down}>{Number(stock.pct_chg) > 0 ? '+' : ''}{format(stock.pct_chg)}%</td><td>{stock.market_cap_rank ? `#${format(stock.market_cap_rank, 0)}` : '--'}</td><td>{stock.industry || '其他'}</td></tr>)}
-        {!filteredStocks.length && <tr><td colSpan={6} className={styles.empty}>暂未形成可用样本；{sourceLabel}已回补 {Number(sourceReady).toLocaleString('zh-CN')}/{Number(progress?.universe || 0).toLocaleString('zh-CN')} 只，新的可用股票会自动显示。</td></tr>}
+      <div className={styles.tableWrap}><table><thead><tr><th>股票代码</th><th>股票名称</th><th><button className={styles.sortButton} onClick={() => togglePoolSort('close')}>最新收盘价{sortIndicator('close')}</button></th><th><button className={styles.sortButton} onClick={() => togglePoolSort('pct_chg')}>最新涨跌幅{sortIndicator('pct_chg')}</button></th><th><button className={styles.sortButton} onClick={() => togglePoolSort('market_cap_rank')}>市值排名{sortIndicator('market_cap_rank')}</button></th><th><button className={styles.sortButton} onClick={() => togglePoolSort('industry')}>所属行业{sortIndicator('industry')}</button></th></tr></thead><tbody>
+        {sortedStocks.map((stock: Record<string, number | string>) => <tr key={String(stock.stock_code)}><td><a href={`https://stockpage.10jqka.com.cn/${stock.stock_code}/`} target="_blank" rel="noreferrer">{stock.stock_code}</a></td><td>{stock.stock_name}</td><td>{format(stock.close)}</td><td className={Number(stock.pct_chg) >= 0 ? styles.up : styles.down}>{Number(stock.pct_chg) > 0 ? '+' : ''}{format(stock.pct_chg)}%</td><td>{stock.market_cap_rank ? `#${format(stock.market_cap_rank, 0)}` : '--'}</td><td>{stock.industry || '其他'}</td></tr>)}
+        {!sortedStocks.length && <tr><td colSpan={6} className={styles.empty}>暂未形成可用样本；{sourceLabel}已回补 {Number(sourceReady).toLocaleString('zh-CN')}/{Number(progress?.universe || 0).toLocaleString('zh-CN')} 只，新的可用股票会自动显示。</td></tr>}
       </tbody></table></div>
     </> : <>
       <div className={styles.chartHead}><b>近三年组合净值</b><div className={styles.chartMeta}><div className={styles.maControls}><span>均线</span>{MA_PERIODS.map(period => <button key={period} className={visibleMas[period] ? styles.active : ''} onClick={() => setVisibleMas(currentMas => ({ ...currentMas, [period]: !currentMas[period] }))}>MA{period}</button>)}</div><div className={styles.stats}><span>最大回撤 <strong>{percent(stats?.max_drawdown_pct)}</strong></span><span>夏普比率 <strong>{format(stats?.sharpe_ratio)}</strong></span><span>近30日标准差 <strong>{percent(stats?.stddev_30d_pct)}</strong></span></div></div></div>

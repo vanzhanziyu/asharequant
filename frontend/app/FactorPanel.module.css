@@ -31,6 +31,8 @@
 .tableWrap { height: clamp(330px, 42vh, 560px); overflow: auto; border: 1px solid #1e293b; border-radius: 9px; background: #02061777; }
 .tableWrap table { border-collapse: collapse; width: 100%; font-size: 13px; }
 .tableWrap th { position: sticky; top: 0; z-index: 1; background: #0f172a; color: #94a3b8; text-align: left; font-size: 11px; }
+.sortButton { border: 0; padding: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; white-space: nowrap; }
+.sortButton:hover { color: #7dd3fc; }
 .tableWrap td, .tableWrap th { padding: 11px 12px; border-bottom: 1px solid #1e293b; }
 .tableWrap tr:hover td { background: #17203366; }
 .tableWrap a { color: #7dd3fc; text-decoration: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
