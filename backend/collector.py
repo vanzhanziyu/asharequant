@@ -30,6 +30,7 @@ MACRO_SYMBOLS = ("USDCNH.FXCM", "USDOLLAR.FXCM", "XAUUSD.FXCM")
 YAHOO_DXY_SYMBOL = "DX-Y.NYB"
 FRED_DXY_COMPONENTS = ("DEXUSEU", "DEXJPUS", "DEXUSUK", "DEXCAUS", "DEXSDUS", "DEXSZUS")
 FRED_FX_SERIES = {"USDCNH.FXCM": ("DEXCHUS", "FRED 美联储 USD/CNY（收盘）")}
+FRANKFURTER_DXY_CURRENCIES = ("EUR", "JPY", "GBP", "CAD", "SEK", "CHF")
 RUNTIME_LOG_DIR = Path(__file__).resolve().parents[1] / ".runtime-logs"
 LIMIT_POOL_HEARTBEAT = RUNTIME_LOG_DIR / "limit_pool.heartbeat"
 # AkShare's Eastmoney pool endpoints occasionally keep a socket open without a
@@ -228,6 +229,42 @@ def sync_macro_history(days: int = 1095) -> None:
         merged["dxy"] = 50.14348112 * (merged["DEXUSEU"] ** -0.576) * (merged["DEXJPUS"] ** 0.136) * (merged["DEXUSUK"] ** -0.119) * (merged["DEXCAUS"] ** 0.091) * (merged["DEXSDUS"] ** 0.042) * (merged["DEXSZUS"] ** 0.036)
         return [(str(row["observation_date"]), float(row["dxy"]), float(row["dxy"]), float(row["dxy"]), float(row["dxy"])) for _, row in merged.iterrows()]
 
+    def frankfurter_dxy_records() -> list[tuple[str, float, float, float, float]]:
+        """Reconstruct standard DXY from the free ECB/Frankfurter daily FX feed.
+
+        Frankfurter reports how many foreign-currency units one USD buys.  Its
+        coverage is generally available on the following European business day,
+        which makes it a useful fallback when Yahoo rate-limits the server and
+        FRED is temporarily unavailable.
+        """
+        start_date = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+        end_date = dt.date.today().isoformat()
+        response = requests.get(
+            f"https://api.frankfurter.dev/v1/{start_date}..{end_date}",
+            params={"base": "USD", "symbols": ",".join(FRANKFURTER_DXY_CURRENCIES)},
+            timeout=30,
+        )
+        response.raise_for_status()
+        dated_rates = response.json().get("rates") or {}
+        records = []
+        for trade_date, rates in dated_rates.items():
+            if not all(currency in rates for currency in FRANKFURTER_DXY_CURRENCIES):
+                continue
+            # Convert USD-base ECB quotations into the conventional DXY inputs.
+            eur_usd = 1 / float(rates["EUR"])
+            gbp_usd = 1 / float(rates["GBP"])
+            dxy = (
+                50.14348112
+                * (eur_usd ** -0.576)
+                * (float(rates["JPY"]) ** 0.136)
+                * (gbp_usd ** -0.119)
+                * (float(rates["CAD"]) ** 0.091)
+                * (float(rates["SEK"]) ** 0.042)
+                * (float(rates["CHF"]) ** 0.036)
+            )
+            records.append((str(trade_date), dxy, dxy, dxy, dxy))
+        return records
+
     for symbol in MACRO_SYMBOLS:
         try:
             frame = client.fx_daily(ts_code=symbol, start_date=start, end_date=end)
@@ -241,16 +278,26 @@ def sync_macro_history(days: int = 1095) -> None:
                         continue
                     raise RuntimeError("Yahoo 未返回有效 K 线")
                 except Exception as yahoo_error:
-                    print(f"[宏观] Yahoo DXY 回退失败：{yahoo_error}；尝试 FRED 复合 DXY。")
+                    print(f"[宏观] Yahoo DXY 回退失败：{yahoo_error}；尝试 Frankfurter/ECB 复合 DXY。")
                     try:
-                        count = save_prices(symbol, fred_dxy_records(), "FRED 复合 DXY（收盘）")
+                        # Preserve previously stored observations so the fallback
+                        # only fills the stale tail and does not revise history.
+                        count = save_prices(symbol, frankfurter_dxy_records(), "Frankfurter / ECB 复合 DXY（收盘）", overwrite=False)
                         if count:
-                            print(f"[完成] {symbol} 通过 FRED 复合 DXY 同步 {count} 条。")
+                            print(f"[完成] {symbol} 通过 Frankfurter / ECB 复合 DXY 补齐 {count} 条。")
                             continue
-                        raise RuntimeError("FRED 未返回有效数据")
-                    except Exception as fred_error:
-                        print(f"[宏观] FRED DXY 回退失败：{fred_error}；保留 Tushare 最后可用数据。")
-                        frame = client.fx_daily(ts_code=symbol)
+                        raise RuntimeError("Frankfurter 未返回有效数据")
+                    except Exception as frankfurter_error:
+                        print(f"[宏观] Frankfurter DXY 回退失败：{frankfurter_error}；尝试 FRED 复合 DXY。")
+                        try:
+                            count = save_prices(symbol, fred_dxy_records(), "FRED 复合 DXY（收盘）")
+                            if count:
+                                print(f"[完成] {symbol} 通过 FRED 复合 DXY 同步 {count} 条。")
+                                continue
+                            raise RuntimeError("FRED 未返回有效数据")
+                        except Exception as fred_error:
+                            print(f"[宏观] FRED DXY 回退失败：{fred_error}；保留 Tushare 最后可用数据。")
+                            frame = client.fx_daily(ts_code=symbol)
             if frame is None or frame.empty:
                 print(f"[宏观] {symbol} 暂无可用日线数据。")
                 continue
