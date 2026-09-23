@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import multiprocessing as mp
 import os
+from queue import Empty
 from io import StringIO
 from pathlib import Path
 from typing import Iterable
@@ -30,6 +32,10 @@ FRED_DXY_COMPONENTS = ("DEXUSEU", "DEXJPUS", "DEXUSUK", "DEXCAUS", "DEXSDUS", "D
 FRED_FX_SERIES = {"USDCNH.FXCM": ("DEXCHUS", "FRED 美联储 USD/CNY（收盘）")}
 RUNTIME_LOG_DIR = Path(__file__).resolve().parents[1] / ".runtime-logs"
 LIMIT_POOL_HEARTBEAT = RUNTIME_LOG_DIR / "limit_pool.heartbeat"
+# AkShare's Eastmoney pool endpoints occasionally keep a socket open without a
+# response.  A normal thread cannot be safely killed, so each pool fetch runs
+# in a short-lived child process with a hard deadline.
+LIMIT_POOL_TIMEOUT_SECONDS = 75
 
 
 def now_text() -> str:
@@ -295,11 +301,47 @@ def fetch_and_save_limit_stocks(limit_type: str) -> int:
     return len(frame)
 
 
+def _limit_pool_worker(limit_type: str, result_queue: mp.Queue) -> None:
+    """Child-process entry point so a stuck AkShare request is terminable."""
+    try:
+        result_queue.put(("ok", fetch_and_save_limit_stocks(limit_type)))
+    except BaseException as exc:
+        result_queue.put(("error", str(exc)))
+
+
+def fetch_limit_pool_with_timeout(limit_type: str) -> int:
+    context = mp.get_context("fork")
+    result_queue = context.Queue(maxsize=1)
+    worker = context.Process(target=_limit_pool_worker, args=(limit_type, result_queue), daemon=True)
+    worker.start()
+    worker.join(LIMIT_POOL_TIMEOUT_SECONDS)
+    if worker.is_alive():
+        worker.terminate()
+        worker.join(5)
+        print(f"[涨跌停] {limit_type} 请求超过 {LIMIT_POOL_TIMEOUT_SECONDS} 秒，已终止；下一轮会自动重试。")
+        result_queue.close()
+        return 0
+    try:
+        # The process may have exited just before its queue feeder flushes.  Give
+        # it a brief chance instead of treating a successful collection as empty.
+        status, payload = result_queue.get(timeout=2)
+    except Empty:
+        print(f"[涨跌停] {limit_type} 子进程未返回结果（退出码 {worker.exitcode}）。")
+        result_queue.close()
+        return 0
+    result_queue.close()
+    if status == "error":
+        print(f"[涨跌停] {limit_type} 子进程失败：{payload}")
+        return 0
+    return int(payload)
+
+
 def realtime_job() -> None:
     # 无论数据源是否暂时返回空数据，都记录本轮任务已实际执行；
     # 唤醒后的健康检查据此判断采集器是否需要自动重启。
     try:
-        up, down = fetch_and_save_limit_stocks("limit_up"), fetch_and_save_limit_stocks("limit_down")
+        up = fetch_limit_pool_with_timeout("limit_up")
+        down = fetch_limit_pool_with_timeout("limit_down")
         print(f"[完成] 涨停 {up} 家，跌停 {down} 家。")
     finally:
         try:
