@@ -1,10 +1,20 @@
 .panel {
-  min-height: calc(100vh - 92px);
+  min-height: calc(100vh - 116px);
   background: #0f172a;
   border: 1px solid #1e293b;
   border-radius: 12px;
   padding: 10px;
   box-shadow: 0 8px 25px #0002;
+}
+
+/* The performance view is a workspace, not a document: its chart should use
+   every pixel left below the app header and its own compact controls. */
+.performancePanel {
+  height: calc(100vh - 116px);
+  min-height: 620px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .topbar, .pageTabs, .factorTabs, .heading, .filterLine, .chartHead { display: flex; align-items: center; }
@@ -37,7 +47,10 @@
 .tableWrap tr:hover td { background: #17203366; }
 .tableWrap a { color: #7dd3fc; text-decoration: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .up { color: #fb7185; }.down { color: #34d399; }.empty, .pending { color: #64748b; text-align: center; padding: 34px; }
-.chartHead { justify-content: space-between; gap: 12px; padding: 8px 1px; color: #dbeafe; font-size: 14px; }
+.chartHead { justify-content: space-between; gap: 12px; padding: 7px 1px 9px; color: #dbeafe; font-size: 14px; border-top: 1px solid #1e293b; }
+.chartTitle { display: flex; align-items: baseline; gap: 9px; white-space: nowrap; }
+.chartTitle b { font-size: 15px; color: #f8fafc; }
+.chartTitle span { color: #64748b; font-size: 11px; }
 .chartMeta, .maControls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .maControls { color: #94a3b8; font-size: 11px; }
 .maControls button { border: 1px solid #334155; border-radius: 6px; background: #0b1324; color: #64748b; padding: 4px 7px; cursor: pointer; font-size: 11px; }
@@ -46,10 +59,14 @@
 .stats span { padding: 4px 8px; border: 1px solid #334155; border-radius: 6px; color: #94a3b8; font-size: 11px; }
 .stats strong { margin-left: 5px; color: #f8fafc; font-variant-numeric: tabular-nums; }
 .chart { height: calc(100vh - 220px); min-height: 470px; border: 1px solid #1e293b; border-radius: 9px; background: #02061777; }
+.performanceChart { flex: 1 1 auto; min-height: 0; border: 1px solid #1e293b; border-radius: 9px; background: #02061777; overflow: hidden; }
 
 @media (max-width: 760px) {
   .topbar, .heading, .chartHead { align-items: flex-start; flex-direction: column; }
   .chartMeta { align-items: flex-start; flex-direction: column; }
   .status { white-space: normal; }.rankForm { width: 100%; justify-content: space-between; }
   .treemap { height: 260px; }.tableWrap { height: 460px; }.chart { height: 460px; min-height: 460px; }
+  .performancePanel { height: auto; min-height: calc(100vh - 180px); overflow: visible; }
+  .performanceChart { height: calc(100vh - 300px); min-height: 420px; flex: none; }
+  .chartTitle { align-items: flex-start; flex-direction: column; gap: 2px; white-space: normal; }
 }
