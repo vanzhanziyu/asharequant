@@ -31,6 +31,7 @@ YAHOO_DXY_SYMBOL = "DX-Y.NYB"
 FRED_DXY_COMPONENTS = ("DEXUSEU", "DEXJPUS", "DEXUSUK", "DEXCAUS", "DEXSDUS", "DEXSZUS")
 FRED_FX_SERIES = {"USDCNH.FXCM": ("DEXCHUS", "FRED 美联储 USD/CNY（收盘）")}
 FRANKFURTER_DXY_CURRENCIES = ("EUR", "JPY", "GBP", "CAD", "SEK", "CHF")
+US_TREASURY_DAILY_CSV = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/{year}/all"
 RUNTIME_LOG_DIR = Path(__file__).resolve().parents[1] / ".runtime-logs"
 LIMIT_POOL_HEARTBEAT = RUNTIME_LOG_DIR / "limit_pool.heartbeat"
 # AkShare's Eastmoney pool endpoints occasionally keep a socket open without a
@@ -144,6 +145,56 @@ def sync_macro_history(days: int = 1095) -> None:
         return
     stamp = now_text()
 
+    def save_treasury_rows(rows: Iterable[tuple[str, float, float, float, float, float]]) -> int:
+        rows = list(rows)
+        if not rows:
+            return 0
+        with connect() as conn:
+            for trade_date, m3, y2, y5, y10, y30 in rows:
+                conn.execute(
+                    """INSERT INTO us_treasury_history (trade_date,m3,y2,y5,y10,y30,updated_at)
+                    VALUES (?,?,?,?,?,?,?) ON CONFLICT(trade_date) DO UPDATE SET
+                    m3=excluded.m3,y2=excluded.y2,y5=excluded.y5,y10=excluded.y10,
+                    y30=excluded.y30,updated_at=excluded.updated_at""",
+                    (trade_date, m3, y2, y5, y10, y30, stamp),
+                )
+        return len(rows)
+
+    def official_treasury_records() -> list[tuple[str, float, float, float, float, float]]:
+        """Read the US Treasury's public yield-curve CSV as the timely fallback."""
+        cutoff = dt.date.today() - dt.timedelta(days=days)
+        records = []
+        for year in range(cutoff.year, dt.date.today().year + 1):
+            response = requests.get(
+                US_TREASURY_DAILY_CSV.format(year=year),
+                params={
+                    "type": "daily_treasury_yield_curve",
+                    "field_tdr_date_value": str(year),
+                    "page": "",
+                    "_format": "csv",
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+            frame = pd.read_csv(StringIO(response.text))
+            if "Date" not in frame:
+                continue
+            frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce")
+            frame = frame.dropna(subset=["Date"])
+            for _, row in frame.iterrows():
+                trade_date = row["Date"].date()
+                if trade_date < cutoff:
+                    continue
+                records.append((
+                    trade_date.isoformat(),
+                    _as_float(row.get("3 Mo")),
+                    _as_float(row.get("2 Yr")),
+                    _as_float(row.get("5 Yr")),
+                    _as_float(row.get("10 Yr")),
+                    _as_float(row.get("30 Yr")),
+                ))
+        return records
+
     try:
         yields = client.us_tycr(start_date=start, end_date=end)
         if yields is not None and not yields.empty:
@@ -160,6 +211,13 @@ def sync_macro_history(days: int = 1095) -> None:
             print(f"[完成] 美债收益率同步 {len(yields)} 条。")
     except Exception as exc:
         print(f"[宏观] 美债收益率同步失败：{exc}")
+
+    try:
+        official_count = save_treasury_rows(official_treasury_records())
+        if official_count:
+            print(f"[完成] 美债收益率通过美国财政部官方数据同步 {official_count} 条。")
+    except Exception as exc:
+        print(f"[宏观] 美国财政部收益率回退失败：{exc}")
 
     def save_prices(
         symbol: str,
@@ -265,6 +323,24 @@ def sync_macro_history(days: int = 1095) -> None:
             records.append((str(trade_date), dxy, dxy, dxy, dxy))
         return records
 
+    def frankfurter_usdcny_records() -> list[tuple[str, float, float, float, float]]:
+        """Use the free ECB USD/CNY reference rate only for missing USDCNH dates."""
+        start_date = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+        end_date = dt.date.today().isoformat()
+        response = requests.get(
+            f"https://api.frankfurter.dev/v1/{start_date}..{end_date}",
+            params={"base": "USD", "symbols": "CNY"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        records = []
+        for trade_date, rates in (response.json().get("rates") or {}).items():
+            if "CNY" not in rates:
+                continue
+            value = float(rates["CNY"])
+            records.append((str(trade_date), value, value, value, value))
+        return records
+
     for symbol in MACRO_SYMBOLS:
         try:
             frame = client.fx_daily(ts_code=symbol, start_date=start, end_date=end)
@@ -304,6 +380,10 @@ def sync_macro_history(days: int = 1095) -> None:
             records = [(normalize_date(row.get("trade_date", "")), _as_float(row.get("bid_open")), _as_float(row.get("bid_high")), _as_float(row.get("bid_low")), _as_float(row.get("bid_close"))) for _, row in frame.iterrows()]
             count = save_prices(symbol, records, "Tushare")
             print(f"[完成] {symbol} 通过 Tushare 同步 {count} 条。")
+            if symbol == "USDCNH.FXCM":
+                proxy_count = save_prices(symbol, frankfurter_usdcny_records(), "Frankfurter / ECB USD/CNY（代理）", overwrite=False)
+                if proxy_count:
+                    print(f"[完成] {symbol} 通过 Frankfurter / ECB 补齐 {proxy_count} 条。")
             if symbol in FRED_FX_SERIES:
                 series_id, source = FRED_FX_SERIES[symbol]
                 fallback_count = save_prices(symbol, fred_records(series_id), source, overwrite=False)
@@ -440,7 +520,9 @@ def start_scheduler(sync_on_start: bool = True) -> None:
     scheduler.add_job(sync_recent_market_history, "cron", day_of_week="mon-fri", hour="9-22", minute="0", **job_options)
     scheduler.add_job(sync_post_close_market_data, "cron", day_of_week="mon-fri", hour="16", minute="5", **job_options)
     scheduler.add_job(sync_recent_margin_history, "cron", day_of_week="mon-fri", hour="9,22", minute="0", **job_options)
-    scheduler.add_job(sync_recent_macro_history, "cron", day_of_week="mon-fri", hour="7", minute="10", **job_options)
+    # Global markets release their final daily files at different times.  A
+    # morning, midday and evening pass avoids leaving the panel stale all day.
+    scheduler.add_job(sync_recent_macro_history, "cron", day_of_week="mon-fri", hour="7,13,20", minute="10", **job_options)
     # 服务启动即抓一次涨跌停池；随后让 APScheduler 立即接管后续任务。
     scheduler.add_job(realtime_job, "date", run_date=dt.datetime.now(), id="startup_limit_pool", **job_options)
     if sync_on_start:
