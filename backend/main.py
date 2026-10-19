@@ -21,6 +21,7 @@ FACTOR_LABELS = {
     "dividend_yield": "纯红利因子",
     "ebitda_cagr": "EBITDA 增速",
 }
+MARKET_EMOTION_HISTORY_START = "2024-09-23"
 
 
 def num(value: object) -> float:
@@ -35,7 +36,7 @@ def health(): return {"status": "ok"}
 @app.get("/api/margin")
 def margin():
     with closing(connect()) as conn:
-        rows = conn.execute("SELECT trade_date,rzrqye FROM margin_history WHERE rzrqye IS NOT NULL ORDER BY trade_date").fetchall()
+        rows = conn.execute("SELECT trade_date,rzrqye FROM margin_history WHERE rzrqye IS NOT NULL AND trade_date>=? ORDER BY trade_date", (MARKET_EMOTION_HISTORY_START,)).fetchall()
     return [{"trade_date": row["trade_date"], "rzrqye": num(row["rzrqye"])} for row in rows]
 
 
@@ -59,10 +60,10 @@ def turnover_overview():
 
 
 @app.get("/api/turnover/history")
-def turnover_history(days: int = Query(365, ge=1, le=2000)):
+def turnover_history(start_date: str = Query(MARKET_EMOTION_HISTORY_START, pattern=r"^\d{4}-\d{2}-\d{2}$")):
     with closing(connect()) as conn:
         rows = conn.execute("""SELECT trade_date,total_amount,sh_amount,sz_amount,cyb_amount,kc50_amount,hl_amount,wind_micro_amount
-            FROM market_turnover_history WHERE total_amount IS NOT NULL ORDER BY trade_date DESC LIMIT ?""", (days,)).fetchall()
+            FROM market_turnover_history WHERE total_amount IS NOT NULL AND trade_date>=? ORDER BY trade_date""", (start_date,)).fetchall()
     return {"list": [{key: (row["trade_date"] if key == "trade_date" else num(row[key])) for key in row.keys()} for row in reversed(rows)]}
 
 

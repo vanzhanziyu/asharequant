@@ -32,6 +32,10 @@ FRED_DXY_COMPONENTS = ("DEXUSEU", "DEXJPUS", "DEXUSUK", "DEXCAUS", "DEXSDUS", "D
 FRED_FX_SERIES = {"USDCNH.FXCM": ("DEXCHUS", "FRED 美联储 USD/CNY（收盘）")}
 FRANKFURTER_DXY_CURRENCIES = ("EUR", "JPY", "GBP", "CAD", "SEK", "CHF")
 US_TREASURY_DAILY_CSV = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/{year}/all"
+# Market-emotion charts share a stable, explicit starting point rather than a
+# moving "last 365 days" window.  The frequent jobs below still fetch only a
+# short recent tail; this date is used for startup/backfill runs only.
+MARKET_EMOTION_HISTORY_START = dt.date(2024, 9, 23)
 RUNTIME_LOG_DIR = Path(__file__).resolve().parents[1] / ".runtime-logs"
 LIMIT_POOL_HEARTBEAT = RUNTIME_LOG_DIR / "limit_pool.heartbeat"
 # AkShare's Eastmoney pool endpoints occasionally keep a socket open without a
@@ -57,10 +61,10 @@ def pro_api():
     return ts.pro_api(token)
 
 
-def sync_history_turnover(days: int = 365) -> None:
-    """Store index OHLC and turnover in yi yuan for the most recent period."""
+def sync_history_turnover(days: int = 365, start_date: dt.date | None = None) -> None:
+    """Store index OHLC and turnover in yi yuan for the requested period."""
     init_db()
-    start = (dt.datetime.now() - dt.timedelta(days=days)).strftime("%Y%m%d")
+    start = (start_date or (dt.datetime.now() - dt.timedelta(days=days)).date()).strftime("%Y%m%d")
     try:
         client = pro_api()
     except Exception as exc:
@@ -113,9 +117,9 @@ def sync_history_turnover(days: int = 365) -> None:
     print("[完成] 常规指数与成交额已同步。")
 
 
-def sync_margin_history(days: int = 365) -> None:
+def sync_margin_history(days: int = 365, start_date: dt.date | None = None) -> None:
     init_db()
-    start = (dt.datetime.now() - dt.timedelta(days=days)).strftime("%Y%m%d")
+    start = (start_date or (dt.datetime.now() - dt.timedelta(days=days)).date()).strftime("%Y%m%d")
     try:
         frame = pro_api().margin(start_date=start, end_date=dt.datetime.now().strftime("%Y%m%d"))
         if frame is None or frame.empty:
@@ -498,14 +502,14 @@ def sync_recent_macro_history() -> None:
 
 
 def run_once() -> None:
-    init_db(); sync_history_turnover(); sync_margin_history(); sync_macro_history(); realtime_job()
+    init_db(); sync_history_turnover(start_date=MARKET_EMOTION_HISTORY_START); sync_margin_history(start_date=MARKET_EMOTION_HISTORY_START); sync_macro_history(); realtime_job()
 
 
 def sync_initial_history() -> None:
     """服务启动后后台回补历史，不能阻塞盘中定时任务。"""
     init_db()
-    sync_history_turnover()
-    sync_margin_history()
+    sync_history_turnover(start_date=MARKET_EMOTION_HISTORY_START)
+    sync_margin_history(start_date=MARKET_EMOTION_HISTORY_START)
     sync_macro_history()
 
 

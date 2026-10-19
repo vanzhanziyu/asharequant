@@ -60,7 +60,7 @@ export default function Dashboard() {
     if (pricePreferenceLoaded) window.localStorage.setItem(PRICE_INDEX_STORAGE_KEY, index);
   }, [pricePreferenceLoaded, index]);
   const overview = useSWR(`${API}/api/turnover/overview`, fetcher, { refreshInterval: 30000 });
-  const history = useSWR(`${API}/api/turnover/history?days=365`, fetcher); const margin = useSWR(`${API}/api/margin`, fetcher);
+  const history = useSWR(`${API}/api/turnover/history?start_date=2024-09-23`, fetcher); const margin = useSWR(`${API}/api/margin`, fetcher);
   const up = useSWR(`${API}/api/limit_stocks?limit_type=limit_up`, fetcher, { refreshInterval: 30000 }); const down = useSWR(`${API}/api/limit_stocks?limit_type=limit_down`, fetcher, { refreshInterval: 30000 });
   const kline = useSWR(`${API}/api/index/kline?code=${index}`, fetcher);
   const treasury = useSWR(`${API}/api/macro/treasury?days=1095`, fetcher); const usdcnh = useSWR(`${API}/api/macro/price?symbol=USDCNH.FXCM&days=1095`, fetcher); const dollar = useSWR(`${API}/api/macro/price?symbol=USDOLLAR.FXCM&days=1095`, fetcher); const gold = useSWR(`${API}/api/macro/price?symbol=XAUUSD.FXCM&days=1095`, fetcher);
