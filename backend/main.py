@@ -64,7 +64,7 @@ def turnover_history(start_date: str = Query(MARKET_EMOTION_HISTORY_START, patte
     with closing(connect()) as conn:
         rows = conn.execute("""SELECT trade_date,total_amount,sh_amount,sz_amount,cyb_amount,kc50_amount,hl_amount,wind_micro_amount
             FROM market_turnover_history WHERE total_amount IS NOT NULL AND trade_date>=? ORDER BY trade_date""", (start_date,)).fetchall()
-    return {"list": [{key: (row["trade_date"] if key == "trade_date" else num(row[key])) for key in row.keys()} for row in reversed(rows)]}
+    return {"list": [{key: (row["trade_date"] if key == "trade_date" else num(row[key])) for key in row.keys()} for row in rows]}
 
 
 @app.get("/api/limit_stocks")
