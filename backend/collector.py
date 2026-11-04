@@ -522,7 +522,10 @@ def start_scheduler(sync_on_start: bool = True) -> None:
     job_options = {"coalesce": True, "misfire_grace_time": 86400, "max_instances": 1}
     scheduler.add_job(realtime_job, "cron", day_of_week="mon-fri", hour="9-15", minute="*/5", **job_options)
     scheduler.add_job(sync_recent_market_history, "cron", day_of_week="mon-fri", hour="9-22", minute="0", **job_options)
-    scheduler.add_job(sync_post_close_market_data, "cron", day_of_week="mon-fri", hour="16", minute="5", **job_options)
+    # Tushare's final daily file can arrive several minutes after the close.
+    # Retry twice after the first post-close pass so a delayed publication does
+    # not leave the dashboard showing the previous trading day.
+    scheduler.add_job(sync_post_close_market_data, "cron", day_of_week="mon-fri", hour="16", minute="5,15,30", **job_options)
     scheduler.add_job(sync_recent_margin_history, "cron", day_of_week="mon-fri", hour="9,22", minute="0", **job_options)
     # Global markets release their final daily files at different times.  A
     # morning, midday and evening pass avoids leaving the panel stale all day.
