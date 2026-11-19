@@ -1,0 +1,13 @@
+[Unit]
+Description=Broad-market ETF share and NAV collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=admin
+WorkingDirectory=/opt/ashare-market-monitor/backend
+EnvironmentFile=-/opt/ashare-market-monitor/backend/.env
+ExecStart=/opt/ashare-market-monitor/backend/.venv/bin/python -u etf_flow.py
+TimeoutStartSec=30min
+Nice=10

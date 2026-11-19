@@ -10,8 +10,10 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import connect, init_db
+from etf_flow import init_flow_db, snapshot as etf_flow_snapshot
 
 init_db()
+init_flow_db()
 app = FastAPI(title="A 股行情监控 API", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 VIX_SYMBOLS = {"510050": "50ETF", "510300": "沪深300ETF", "588080": "科创50ETF", "159915": "创业板ETF"}
@@ -31,6 +33,11 @@ def num(value: object) -> float:
 
 @app.get("/api/health")
 def health(): return {"status": "ok"}
+
+
+@app.get("/api/broad-etf/flows")
+def broad_etf_flows(group: str = Query("全部", pattern="^(全部|沪深300|上证50|中证500|中证1000|中证A500|科创50|创业板)$")):
+    return etf_flow_snapshot(group)
 
 
 @app.get("/api/margin")

@@ -53,4 +53,26 @@ npm run dev
 
 ## 常驻采集
 
+### 宽基净流入统计
+
+新增“宽基净流入”一级面板，跟踪界面列出的 12 只宽基 ETF（不是全市场 ETF 总量）。
+使用当前账户已有的 Tushare `fund_share`、`fund_nav`、`fund_daily`，无需 `etf_share_size` 权限。
+估算净申购（亿元）= 相邻交易日份额差（万份）× 当日单位净值 / 10000。
+它表示一级市场净申赎价值估算，不代表二级市场主动买卖，也不能识别国家队身份。
+
+本地在 backend 目录执行 `python etf_flow.py` 进行同步，首次从 2024-09-01 取数、图表自 2024-09-23 展示；之后回刷近 35 天。
+新增 SQLite 表独立保存份额、净值、成交额、交易日历和同步状态。
+缺少相邻交易日份额或当日净值时不填零；全样本未齐时不展示完整总额。
+疑似份额折算会暂时排除，需要核实后回补。
+累计曲线从首个完整样本日计算，中途缺失会暂停累计直至回补。
+
+云端安装 `deploy/systemd/ashare-etf-flow.service` 与 `.timer` 到 `/etc/systemd/system/`，
+执行 `systemctl daemon-reload`、`systemctl enable --now ashare-etf-flow.timer`，
+首次执行 `systemctl start ashare-etf-flow.service`。
+每日北京时间 09:10、10:10、13:40、20:40、22:40 同步，周末也运行以接收上一交易日补发数据。
+接口：`/api/broad-etf/flows`，可用 `group` 筛选跟踪指数。
+验证：在 backend 目录执行 `python -m unittest test_etf_flow -v`。
+
+### 原有采集任务
+
 首次归档完成后，分别执行 `python collector.py`、`python wind_collector.py`、`python vix_collector.py` 与 `python factor_collector.py`，即可按交易时间自动更新。因子采集器会分批回补近三年行情、分红和 EBITDA 数据，完成后自动生成选股快照与收益率序列。VIX 采集器会在交易日 15:30 后每半小时尝试刷新最新交易日；首次运行时会用 Tushare 回补近三年数据。

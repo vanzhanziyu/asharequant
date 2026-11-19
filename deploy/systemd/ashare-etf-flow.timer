@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh broad ETF subscriptions after share and NAV publication
+
+[Timer]
+OnCalendar=*-*-* 09:10:00 Asia/Shanghai
+OnCalendar=*-*-* 10:10:00 Asia/Shanghai
+OnCalendar=*-*-* 13:40:00 Asia/Shanghai
+OnCalendar=*-*-* 20:40:00 Asia/Shanghai
+OnCalendar=*-*-* 22:40:00 Asia/Shanghai
+Persistent=true
+Unit=ashare-etf-flow.service
+
+[Install]
+WantedBy=timers.target
