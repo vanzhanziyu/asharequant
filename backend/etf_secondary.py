@@ -146,4 +146,10 @@ def sync_history():
 
 
 if __name__ == "__main__":
+    from etf_secondary_live import sync_live
+
+    try:
+        sync_live()
+    except Exception as exc:
+        print(f"[今日二级资金] {type(exc).__name__}: {exc}", flush=True)
     sync_history()

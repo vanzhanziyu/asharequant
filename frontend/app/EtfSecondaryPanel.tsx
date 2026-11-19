@@ -16,6 +16,8 @@ type FlowResponse = {
   daily: (Bands & { trade_date: string; covered: number; expected: number; available_main: Value })[];
   errors: { ts_code: string; error: string }[];
 };
+type LiveFund = { ts_code: string; name: string; group: string; main: Value; small: Value; medium: Value; large: Value; super_large: Value; checked_at: string | null };
+type LiveResponse = { date: string | null; source: string; checked_at: string | null; summary: { main: Value; available_main: Value; covered: number; expected: number }; funds: LiveFund[]; groups: { name: string; main: Value; covered: number; expected: number }[]; errors: { ts_code: string; error: string }[] };
 const CATEGORIES = ['全部', '沪深300', '上证50', '中证500', '中证1000', '中证A500', '科创50', '创业板'];
 const KEY = 'ashare-broad-etf-secondary-group-v1';
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || (typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname) ? 'http://127.0.0.1:8000' : '');
@@ -23,6 +25,8 @@ const fmt = (n: Value | undefined, digits = 2) => n == null || !Number.isFinite(
 const signed = (n: Value | undefined) => n == null ? '—' : `${n > 0 ? '+' : ''}${fmt(n)}`;
 const color = (n: Value | undefined) => n == null ? '#64748b' : n >= 0 ? '#fb7185' : '#34d399';
 const fetcher = async (url: string): Promise<FlowResponse> => { const response = await fetch(url); if (!response.ok) throw new Error('资金流向读取失败'); return response.json(); };
+const liveFetcher = async (url: string): Promise<LiveResponse> => { const response = await fetch(url); if (!response.ok) throw new Error('今日快照读取失败'); return response.json(); };
+const timeLabel = (value: string | null | undefined) => value?.replace('T', ' ').replace('+08:00', '') || '暂无';
 const columns: [keyof Bands | 'flow_5' | 'flow_20' | 'main_pct' | 'close' | 'change_pct', string][] = [
   ['main', '主力净额'], ['net_amount', '主动买卖净额'], ['flow_5', '近5日主力'], ['flow_20', '近20日主力'], ['main_pct', '主力净占比'], ['close', '收盘价'], ['change_pct', '涨跌幅'],
 ];
@@ -34,6 +38,7 @@ export default function EtfSecondaryPanel() {
   useEffect(() => { try { const saved = localStorage.getItem(KEY); if (saved && CATEGORIES.includes(saved)) setGroup(saved); } catch {} setReady(true); }, []);
   useEffect(() => { if (ready) { try { localStorage.setItem(KEY, group); } catch {} } }, [group, ready]);
   const { data, error, isLoading, isValidating, mutate } = useSWR(`${API}/api/broad-etf/secondary-flows?group=${encodeURIComponent(group)}`, fetcher, { refreshInterval: 60000 });
+  const { data: live, error: liveError, mutate: refreshLive } = useSWR(`${API}/api/broad-etf/secondary-live?group=${encodeURIComponent(group)}`, liveFetcher, { refreshInterval: 60000 });
   const sorted = useMemo(() => [...(data?.funds || [])].sort((a, b) => {
     const x = a[sort.key], y = b[sort.key];
     if (x == null) return y == null ? 0 : 1;
@@ -56,8 +61,15 @@ export default function EtfSecondaryPanel() {
     ],
   };
   return <section className={styles.panel}>
-    <div className={styles.heading}><div><h2>二级市场资金流向</h2><p>新浪财经 · 选定宽基 ETF · 数据日 {data?.date || '等待采集'}</p></div><button className="button" onClick={() => mutate()} disabled={isValidating}>{isValidating ? '读取中…' : '刷新'}</button></div>
+    <div className={styles.heading}><div><h2>二级市场资金流向</h2><p>今日快照与历史走势分开统计 · 固定宽基 ETF 样本</p></div><button className="button" onClick={() => { mutate(); refreshLive(); }} disabled={isValidating}>{isValidating ? '读取中…' : '刷新'}</button></div>
     <div className={styles.tabs}>{CATEGORIES.map(item => <button key={item} className={`button ${group === item ? 'active' : ''}`} onClick={() => setGroup(item)}>{item}</button>)}</div>
+    <div className={styles.liveCard}>
+      <div className={styles.liveHeading}><div><h3>今日二级市场快照 <span>东方财富 · {live?.date || '等待今日数据'}</span></h3><p className={styles.caption}>最近采集 {timeLabel(live?.checked_at)}；主力净额为大单与超大单净额之和，金额单位：亿元。</p></div><div className={styles.liveTotal}><span>{live?.summary.main == null && live?.summary.available_main != null ? '已获样本小计' : '今日主力净额'}</span><strong style={{ color: color(live?.summary.main ?? live?.summary.available_main) }}>{signed(live?.summary.main ?? live?.summary.available_main)} 亿</strong><small>{live?.summary.covered || 0} / {live?.summary.expected ?? 0} 只</small></div></div>
+      {liveError && <p className={styles.notice}>今日快照接口暂不可用，正在重试。</p>}
+      {live && live.summary.covered < live.summary.expected && <p className={styles.notice}>{live.summary.covered ? '今日部分 ETF 尚未返回数据，以上仅为已获样本小计，不是完整合计。' : '数据源尚未返回今日资金流向；历史数据在下方继续展示。'}不会把缺失值当作零。</p>}
+      {live && live.summary.covered > 0 && <div className={styles.table}><table className={styles.liveTable}><thead><tr><th>ETF / 跟踪指数</th><th>主力净额</th><th>超大单</th><th>大单</th><th>中单</th><th>小单</th><th>采集时间</th></tr></thead><tbody>{live.funds.map(fund => <tr key={fund.ts_code}><td><b>{fund.name}</b><small>{fund.ts_code} · {fund.group}</small></td>{(['main', 'super_large', 'large', 'medium', 'small'] as const).map(key => <td key={key} style={{ color: color(fund[key]) }}>{signed(fund[key])}</td>)}<td>{timeLabel(fund.checked_at)}</td></tr>)}</tbody></table></div>}
+      <p className={styles.caption}>当日数据可能延迟；与下方新浪历史数据的订单分类口径不同，不拼接计算。资金流向不能识别投资者身份，也不等于 ETF 净申购。</p>
+    </div>
     {error && <p className={styles.notice}>资金流向接口暂不可用，正在重试。{data ? '下方保留上次读取结果。' : ''}</p>}
     {isLoading && !data && <p className={styles.caption}>正在读取二级市场资金流向…</p>}
     {data && summary && <>
@@ -68,6 +80,7 @@ export default function EtfSecondaryPanel() {
       {data.stale && <p className={styles.notice}>数据源尚未提供 {data.expected_date} 的记录；下方是 {data.date || '暂无'} 的数据。新浪 ETF 历史资金流向可能次日才发布。</p>}
       {summary.covered < summary.expected && <p className={styles.notice}>部分 ETF 数据缺失，总额和滚动统计不将缺失值当作零。最新完整样本日：{data.complete_date || '暂无'}。</p>}
       {!!data.errors.length && <p className={styles.notice}>{data.errors.length} 只 ETF 最近采集失败，已保留历史数据，下一轮自动重试。</p>}
+      <h3 className={styles.historyHeading}>历史走势 <span>新浪财经 · 数据日 {data.date || '等待采集'}</span></h3>
       <div className={styles.visuals}>
         <div className={styles.chartCard}><h3>二级市场净额历史 <span>柱：主力；蓝线：主动买卖总净额</span></h3><div className={styles.chart}>{daily.length ? <ReactECharts option={option} style={{ height: '100%' }} /> : <p className="empty">暂无有效资金流向数据；不会使用申赎数据代替。</p>}</div><p className={styles.caption}>可用历史 {daily[0]?.trade_date || '—'} 至 {data.date || '—'}，受数据源回溯范围限制；新增记录持续保存。</p></div>
         <aside className={styles.groups}><h3>各指数单日主力净额</h3>{data.groups.map(item => <div className={styles.group} key={item.name}><div><span>{item.name}</span><b style={{ color: color(item.main) }}>{signed(item.main)} 亿</b></div><div className={styles.track}><i style={{ width: `${Math.abs(item.main || 0) / Math.max(1, ...data.groups.map(g => Math.abs(g.main || 0))) * 100}%`, background: color(item.main) }} /></div></div>)}<p className={styles.caption}>按订单大小分类，不代表资金进入 ETF 基金资产，也不能识别国家队。</p></aside>

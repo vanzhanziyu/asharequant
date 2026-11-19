@@ -1,0 +1,135 @@
+"""Same-day broad ETF secondary-market order-flow snapshots from Eastmoney.
+
+These estimates have a different classification from the Sina historical
+series. Keep them in a separate table and never append them to that series.
+"""
+from __future__ import annotations
+
+import datetime as dt
+from contextlib import closing
+from zoneinfo import ZoneInfo
+
+from database import connect
+from etf_flow import FUNDS, complete_sum, finite
+
+URL = "https://push2.eastmoney.com/api/qt/stock/fflow/kline/get"
+SOURCE = "东方财富"
+FIELDS = ("main", "small", "medium", "large", "super_large")
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def init_live_db():
+    with connect() as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS broad_etf_secondary_live (
+          ts_code TEXT NOT NULL, trade_date TEXT NOT NULL,
+          main REAL, small REAL, medium REAL, large REAL, super_large REAL,
+          checked_at TEXT NOT NULL,
+          PRIMARY KEY(ts_code,trade_date));
+        CREATE TABLE IF NOT EXISTS broad_etf_secondary_live_sync (
+          ts_code TEXT PRIMARY KEY, checked_at TEXT, success_at TEXT, error TEXT);
+        """)
+
+
+def parse_live_payload(payload, code, today):
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise ValueError("今日资金流向尚未提供")
+    expected_market = 1 if code.endswith(".SH") else 0
+    if data.get("code") != code.split(".")[0] or data.get("market") != expected_market:
+        raise ValueError("返回的 ETF 代码或市场不匹配")
+    lines = data.get("klines")
+    if not isinstance(lines, list) or not lines:
+        raise ValueError("今日资金流向尚未提供")
+    parts = str(lines[-1]).split(",")
+    if len(parts) != 6:
+        raise ValueError("资金流向字段数量错误")
+    date = dt.date.fromisoformat(parts[0][:10])
+    if date != today:
+        raise ValueError(f"数据停留在 {date.isoformat()}")
+    values = [finite(value) for value in parts[1:]]
+    if any(value is None for value in values):
+        raise ValueError("资金流向数值缺失")
+    # Eastmoney f52-f56: main, small, medium, large, super-large in yuan.
+    main, small, medium, large, super_large = values
+    if abs(main - (large + super_large)) > max(100, abs(main) * 0.0001):
+        raise ValueError("主力净额与大单分项不一致")
+    return {"trade_date": date.isoformat(), **dict(zip(FIELDS, (v / 1e8 for v in values)))}
+
+
+def live_snapshot(group="全部"):
+    selected = [fund for fund in FUNDS if group == "全部" or fund[2] == group]
+    today = dt.datetime.now(SHANGHAI).date().isoformat()
+    codes = [fund[0] for fund in selected]
+    with closing(connect()) as conn:
+        rows = {row["ts_code"]: dict(row) for row in conn.execute(
+            "SELECT * FROM broad_etf_secondary_live WHERE trade_date=?", (today,)) if row["ts_code"] in codes}
+        sync = [dict(row) for row in conn.execute("SELECT * FROM broad_etf_secondary_live_sync") if row["ts_code"] in codes]
+    funds = []
+    for code, name, category in selected:
+        row = rows.get(code, {})
+        funds.append({"ts_code": code, "name": name, "group": category,
+                      **{field: row.get(field) for field in FIELDS},
+                      "checked_at": row.get("checked_at")})
+    values = [fund["main"] for fund in funds]
+    available = [value for value in values if value is not None]
+    groups = []
+    for category in dict.fromkeys(fund[2] for fund in selected):
+        category_values = [fund["main"] for fund in funds if fund["group"] == category]
+        groups.append({"name": category, "main": complete_sum(category_values),
+                       "covered": sum(value is not None for value in category_values),
+                       "expected": len(category_values)})
+    return {"date": today if available else None, "source": SOURCE,
+            "summary": {"main": complete_sum(values),
+                        "available_main": round(sum(available), 4) if available else None,
+                        "covered": len(available), "expected": len(codes)},
+            "funds": funds, "groups": groups,
+            "checked_at": max((row["checked_at"] for row in rows.values()), default=None),
+            "success_at": max((row["success_at"] for row in sync if row["success_at"]), default=None),
+            "errors": [{"ts_code": row["ts_code"], "error": row["error"]} for row in sync if row["error"]]}
+
+
+def sync_live():
+    import requests
+
+    init_live_db()
+    now = dt.datetime.now(SHANGHAI)
+    stamp = now.isoformat(timespec="seconds")
+    successes = 0
+    with requests.Session() as session:
+        session.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
+        for code, name, _ in FUNDS:
+            error = None
+            try:
+                response = session.get(URL, params={
+                    "lmt": 1, "klt": 101,
+                    "secid": ("1" if code.endswith(".SH") else "0") + "." + code.split(".")[0],
+                    "fields1": "f1,f2,f3,f7",
+                    "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63",
+                }, timeout=(8, 15))
+                response.raise_for_status()
+                row = parse_live_payload(response.json(), code, now.date())
+                with connect() as conn:
+                    conn.execute("""INSERT INTO broad_etf_secondary_live
+                        (ts_code,trade_date,main,small,medium,large,super_large,checked_at)
+                        VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(ts_code,trade_date) DO UPDATE SET
+                        main=excluded.main,small=excluded.small,medium=excluded.medium,
+                        large=excluded.large,super_large=excluded.super_large,
+                        checked_at=excluded.checked_at""",
+                        (code, row["trade_date"], *(row[field] for field in FIELDS), stamp))
+                successes += 1
+                print(f"[今日二级资金] {name}: {row['trade_date']}", flush=True)
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {str(exc)[:180]}"
+                print(f"[今日二级资金] {name}: {error}", flush=True)
+            with connect() as conn:
+                conn.execute("""INSERT INTO broad_etf_secondary_live_sync VALUES (?,?,?,?)
+                    ON CONFLICT(ts_code) DO UPDATE SET checked_at=excluded.checked_at,
+                    success_at=COALESCE(excluded.success_at,broad_etf_secondary_live_sync.success_at),
+                    error=excluded.error""", (code, stamp, stamp if error is None else None, error))
+    if not successes:
+        raise RuntimeError("全部 ETF 今日快照采集失败；历史数据已保留")
+
+
+if __name__ == "__main__":
+    sync_live()
