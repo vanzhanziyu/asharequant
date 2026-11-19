@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh ETF secondary flows every five minutes during market hours
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09..16:00/5:00 Asia/Shanghai
+OnCalendar=Mon..Fri *-*-* 20:40:00 Asia/Shanghai
+Persistent=true
+Unit=ashare-etf-secondary.service
+
+[Install]
+WantedBy=timers.target

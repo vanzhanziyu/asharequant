@@ -1,0 +1,13 @@
+[Unit]
+Description=Broad ETF secondary-market order flow collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=admin
+WorkingDirectory=/opt/ashare-market-monitor/backend
+ExecStart=/opt/ashare-market-monitor/backend/.venv/bin/python -u etf_secondary.py
+TimeoutStartSec=8min
+Nice=10
+

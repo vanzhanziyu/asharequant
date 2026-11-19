@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import useSWR from 'swr';
 import ReactECharts from 'echarts-for-react';
 import styles from './EtfFlowPanel.module.css';
+import EtfSecondaryPanel from './EtfSecondaryPanel';
 
 type Value = number | null;
 type Flows = { net_flow: Value; flow_5: Value; flow_20: Value };
@@ -23,6 +24,23 @@ const color = (n: Value | undefined) => n == null ? '#64748b' : n >= 0 ? '#fb718
 const fetcher = async (url: string): Promise<Response> => { const res = await fetch(url); if (!res.ok) throw new Error(`接口请求失败 (${res.status})`); return res.json(); };
 
 export default function EtfFlowPanel() {
+  const [tab, setTab] = useState('primary');
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    try { if (localStorage.getItem('ashare-broad-etf-tab-v1') === 'secondary') setTab('secondary'); } catch {}
+    setReady(true);
+  }, []);
+  useEffect(() => { if (ready) { try { localStorage.setItem('ashare-broad-etf-tab-v1', tab); } catch {} } }, [tab, ready]);
+  return <div>
+    <div className={styles.tabs} role="tablist" aria-label="宽基资金统计口径">
+      <button role="tab" aria-selected={tab === 'primary'} className={`button ${tab === 'primary' ? 'active' : ''}`} onClick={() => setTab('primary')}>份额法净申购</button>
+      <button role="tab" aria-selected={tab === 'secondary'} className={`button ${tab === 'secondary' ? 'active' : ''}`} onClick={() => setTab('secondary')}>二级市场资金流向</button>
+    </div>
+    {tab === 'secondary' ? <EtfSecondaryPanel /> : <EtfPrimaryPanel />}
+  </div>;
+}
+
+function EtfPrimaryPanel() {
   const [group, setGroup] = useState('全部');
   const [ready, setReady] = useState(false);
   const [sort, setSort] = useState<{ key: 'net_flow' | 'flow_5' | 'flow_20' | 'assets' | 'amount'; ascending: boolean }>({ key: 'net_flow', ascending: false });
