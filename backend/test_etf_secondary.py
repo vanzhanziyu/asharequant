@@ -9,24 +9,21 @@ import etf_secondary as secondary
 
 
 class SecondaryTests(unittest.TestCase):
-    def payload(self, lines):
-        return {"rc": 0, "data": {"code": "510300", "market": 1, "klines": lines}}
-
     def test_real_source_field_order_and_units(self):
-        payload = self.payload(["2026-11-19,-111223344,98712272,12511184,9474768,-120698112,-0.98,0.87,0.11,0.08,-1.07,4.060,0.05,0,0"])
-        row = secondary.parse_payload(payload, "510300.SH", dt.date(2026, 11, 19))["2026-11-19"]
-        self.assertAlmostEqual(row[0], -1.11223344)
-        self.assertAlmostEqual(row[4], -1.20698112)
-        self.assertEqual(row[5:], (-0.98, 4.06, 0.05))
+        payload = [{"opendate": "2026-11-18", "trade": "4.0580", "changeratio": "0.00395844", "netamount": "-399682947.3450", "r0_net": "-483523057.9240", "r0_ratio": "-0.06329504"}]
+        row = secondary.parse_payload(payload, "510300.SH", dt.date(2026, 11, 19))["2026-11-18"]
+        self.assertAlmostEqual(row[0], -4.83523057924)
+        self.assertAlmostEqual(row[1], -6.329504)
+        self.assertAlmostEqual(row[2], 4.058)
+        self.assertAlmostEqual(row[3], 0.395844)
+        self.assertAlmostEqual(row[4], -3.99682947345)
 
     def test_invalid_data_not_zero(self):
-        for payload in ({"rc": 0, "data": None}, self.payload([]), self.payload(["2026-11-19,-,0,0,0,0,0,0,0,0,0,4,0"]), self.payload(["2026-11-20,0,0,0,0,0,0,0,0,0,0,4,0"]), self.payload(["2026-11-19,10000,0,0,0,0,0,0,0,0,0,4,0"])):
+        for payload in ({"__ERROR": 1}, [], [{"opendate": "2026-11-19", "r0_net": "-", "netamount": "0"}], [{"opendate": "2026-11-20", "r0_net": "0", "netamount": "0"}]):
             with self.assertRaises(ValueError):
                 secondary.parse_payload(payload, "510300.SH", dt.date(2026, 11, 19))
-        payload = self.payload(["2026-11-19,0,0,0,0,0,0,0,0,0,0,4,0"])
+        payload = [{"opendate": "2026-11-19", "r0_net": "0", "netamount": "0"}]
         self.assertEqual(secondary.parse_payload(payload, "510300.SH", dt.date(2026, 11, 19))["2026-11-19"][0], 0)
-        with self.assertRaises(ValueError):
-            secondary.parse_payload(payload, "159919.SZ", dt.date(2026, 11, 19))
 
     def test_missing_day_coverage_windows_and_filter(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(database, "DB_PATH", Path(directory) / "test.db"), patch.object(secondary, "FUNDS", (("A", "A", "甲"), ("B", "B", "乙"))):
@@ -36,9 +33,10 @@ class SecondaryTests(unittest.TestCase):
             with database.connect() as conn:
                 conn.executemany("INSERT INTO broad_etf_calendar VALUES (?)", [(d,) for d in dates])
                 for code in ["A", "B"]:
-                    conn.executemany("INSERT INTO broad_etf_secondary_daily VALUES (?,?,?,?,?,?,?,?,?,?,?)", [(code, d, 3, -1, -2, 1, 2, 10, 4, 1, d) for d in dates])
+                    conn.executemany("INSERT INTO broad_etf_secondary_daily VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", [(code, d, 3, None, None, None, None, 10, 4, 1, d, 5) for d in dates])
             result = secondary.snapshot()
             self.assertEqual(result["summary"]["flow_20"], 120)
+            self.assertEqual(result["daily"][-1]["net_amount"], 10)
             self.assertEqual(secondary.snapshot("甲")["summary"]["flow_5"], 15)
             with database.connect() as conn:
                 conn.execute("DELETE FROM broad_etf_secondary_daily WHERE trade_date=? AND ts_code='A'", (dates[-1],))

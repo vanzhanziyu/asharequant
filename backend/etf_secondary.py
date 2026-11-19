@@ -1,7 +1,8 @@
-"""Eastmoney ETF order-size money flows. Separate from primary-market creations.
+"""Sina ETF secondary-market money flows, independent of fund creations.
 
-Amounts returned by daykline are yuan; persisted/API amounts are 100m yuan.
-Provider 'main' = large + super-large orders, not investor identification.
+Sina's netamount is all actively classified net trade value; r0_net is the
+provider's large-ticket/major-order subset. Source amounts are yuan; database
+and API amounts are 100m yuan. The source usually publishes ETF rows with a lag.
 """
 from __future__ import annotations
 
@@ -12,8 +13,9 @@ from zoneinfo import ZoneInfo
 from database import connect
 from etf_flow import FUNDS, complete_sum, finite, init_flow_db
 
-FIELDS = ("main", "small", "medium", "large", "super_large")
-SOURCE = "东方财富"
+FIELDS = ("main", "net_amount")
+SOURCE = "新浪财经"
+SINA_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_qsfx_zjlrqs"
 
 
 def init_secondary_db():
@@ -28,32 +30,33 @@ def init_secondary_db():
         CREATE TABLE IF NOT EXISTS broad_etf_secondary_sync (
           ts_code TEXT PRIMARY KEY, checked_at TEXT, success_at TEXT, error TEXT);
         """)
+        # This table was first deployed with Eastmoney-only columns. Its first
+        # collection failed, so adding the Sina total preserves the live schema.
+        if not any(row[1] == "net_amount" for row in conn.execute("PRAGMA table_info(broad_etf_secondary_daily)")):
+            conn.execute("ALTER TABLE broad_etf_secondary_daily ADD COLUMN net_amount REAL")
 
 
 def parse_payload(payload, code, today):
-    data = payload.get("data") or {}
-    market = 1 if code.endswith(".SH") else 0
-    if payload.get("rc") != 0 or data.get("code") != code.split(".")[0] or data.get("market") != market:
-        raise ValueError("数据源未返回匹配的 ETF")
-    lines = data.get("klines")
-    if not isinstance(lines, list) or not lines:
+    if not isinstance(payload, list) or not payload:
         raise ValueError("数据源暂无资金流向记录")
     records = {}
-    for line in lines:
-        parts = line.split(",")
-        if len(parts) < 13:
-            raise ValueError("资金流向字段不完整")
-        date = dt.date.fromisoformat(parts[0])
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("资金流向字段格式错误")
+        date = dt.date.fromisoformat(str(item.get("opendate", "")))
         if date > today:
             raise ValueError("数据日期晚于当前日期")
-        amounts = [finite(x) for x in parts[1:6]]
-        if any(x is None for x in amounts):
-            # Do not turn absent data into zero or overwrite previously valid rows.
+        main = finite(item.get("r0_net"))
+        total = finite(item.get("netamount"))
+        if main is None or total is None:
             continue
-        main, _, _, large, super_large = amounts
-        if abs(main - large - super_large) > max(100, abs(main) * 0.0001):
-            raise ValueError("主力净流入与大单合计不一致，字段待核实")
-        records[date.isoformat()] = (*[x / 1e8 for x in amounts], finite(parts[6]), finite(parts[11]), finite(parts[12]))
+        ratio = finite(item.get("r0_ratio"))
+        change = finite(item.get("changeratio"))
+        records[date.isoformat()] = (
+            main / 1e8, ratio * 100 if ratio is not None else None,
+            finite(item.get("trade")), change * 100 if change is not None else None,
+            total / 1e8,
+        )
     if not records:
         raise ValueError("资金流向数值均缺失")
     return records
@@ -110,19 +113,23 @@ def sync_history():
     stamp = now.isoformat(timespec="seconds")
     successes = 0
     with requests.Session() as session:
-        session.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"})
+        session.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn/"})
         for code, name, _ in FUNDS:
             error = None
             try:
-                response = session.get("https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get", params={
-                    "lmt": "0", "klt": "101", "secid": f"{1 if code.endswith('.SH') else 0}.{code.split('.')[0]}",
-                    "fields1": "f1,f2,f3,f7",
-                    "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
+                symbol = ("sh" if code.endswith(".SH") else "sz") + code.split(".")[0]
+                response = session.get(SINA_URL, params={
+                    "page": 1, "num": 240, "sort": "opendate", "asc": 0, "daima": symbol,
                 }, timeout=(8, 20))
                 response.raise_for_status()
                 records = parse_payload(response.json(), code, now.date())
                 with connect() as conn:
-                    conn.executemany("INSERT OR REPLACE INTO broad_etf_secondary_daily VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    conn.executemany("""INSERT INTO broad_etf_secondary_daily
+                        (ts_code,trade_date,main,main_pct,close,change_pct,net_amount,checked_at)
+                        VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(ts_code,trade_date) DO UPDATE SET
+                        main=excluded.main,main_pct=excluded.main_pct,close=excluded.close,
+                        change_pct=excluded.change_pct,net_amount=excluded.net_amount,
+                        checked_at=excluded.checked_at""",
                         [(code, date, *values, stamp) for date, values in records.items()])
                 successes += 1
                 print(f"[二级资金] {name}: {len(records)} 条，最新 {max(records)}", flush=True)
