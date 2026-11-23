@@ -16,8 +16,9 @@ type FlowResponse = {
   daily: (Bands & { trade_date: string; covered: number; expected: number; available_main: Value })[];
   errors: { ts_code: string; error: string }[];
 };
-type LiveFund = { ts_code: string; name: string; group: string; main: Value; small: Value; medium: Value; large: Value; super_large: Value; checked_at: string | null };
+type LiveFund = { ts_code: string; name: string; group: string; main: Value; change_5m: Value; previous_checked_at: string | null; small: Value; medium: Value; large: Value; super_large: Value; checked_at: string | null };
 type LiveResponse = { date: string | null; source: string; checked_at: string | null; summary: { main: Value; available_main: Value; covered: number; expected: number }; funds: LiveFund[]; groups: { name: string; main: Value; covered: number; expected: number }[]; errors: { ts_code: string; error: string }[] };
+type LiveHistory = { ts_code: string; name: string; trade_date: string; points: { checked_at: string; main: Value }[] };
 const CATEGORIES = ['全部', '沪深300', '上证50', '中证500', '中证1000', '中证A500', '科创50', '创业板'];
 const KEY = 'ashare-broad-etf-secondary-group-v1';
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || (typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname) ? 'http://127.0.0.1:8000' : '');
@@ -26,6 +27,7 @@ const signed = (n: Value | undefined) => n == null ? '—' : `${n > 0 ? '+' : ''
 const color = (n: Value | undefined) => n == null ? '#64748b' : n >= 0 ? '#fb7185' : '#34d399';
 const fetcher = async (url: string): Promise<FlowResponse> => { const response = await fetch(url); if (!response.ok) throw new Error('资金流向读取失败'); return response.json(); };
 const liveFetcher = async (url: string): Promise<LiveResponse> => { const response = await fetch(url); if (!response.ok) throw new Error('今日快照读取失败'); return response.json(); };
+const historyFetcher = async (url: string): Promise<LiveHistory> => { const response = await fetch(url); if (!response.ok) throw new Error('日内曲线读取失败'); return response.json(); };
 const timeLabel = (value: string | null | undefined) => value?.replace('T', ' ').replace('+08:00', '') || '暂无';
 const columns: [keyof Bands | 'flow_5' | 'flow_20' | 'main_pct' | 'close' | 'change_pct', string][] = [
   ['main', '主力净额'], ['net_amount', '主动买卖净额'], ['flow_5', '近5日主力'], ['flow_20', '近20日主力'], ['main_pct', '主力净占比'], ['close', '收盘价'], ['change_pct', '涨跌幅'],
@@ -35,10 +37,14 @@ export default function EtfSecondaryPanel() {
   const [group, setGroup] = useState('全部');
   const [ready, setReady] = useState(false);
   const [sort, setSort] = useState<{ key: typeof columns[number][0]; ascending: boolean }>({ key: 'main', ascending: false });
+  const [selectedCode, setSelectedCode] = useState<string | null>(null);
   useEffect(() => { try { const saved = localStorage.getItem(KEY); if (saved && CATEGORIES.includes(saved)) setGroup(saved); } catch {} setReady(true); }, []);
   useEffect(() => { if (ready) { try { localStorage.setItem(KEY, group); } catch {} } }, [group, ready]);
+  useEffect(() => { if (!selectedCode) return; const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setSelectedCode(null); }; window.addEventListener('keydown', close); return () => window.removeEventListener('keydown', close); }, [selectedCode]);
   const { data, error, isLoading, isValidating, mutate } = useSWR(`${API}/api/broad-etf/secondary-flows?group=${encodeURIComponent(group)}`, fetcher, { refreshInterval: 60000 });
   const { data: live, error: liveError, mutate: refreshLive } = useSWR(`${API}/api/broad-etf/secondary-live?group=${encodeURIComponent(group)}`, liveFetcher, { refreshInterval: 60000 });
+  const { data: intraday, error: intradayError, isLoading: intradayLoading } = useSWR<LiveHistory>(selectedCode ? `${API}/api/broad-etf/secondary-live/history?ts_code=${encodeURIComponent(selectedCode)}` : null, historyFetcher, { refreshInterval: 60000 });
+  const selectedFund = live?.funds.find(fund => fund.ts_code === selectedCode);
   const sorted = useMemo(() => [...(data?.funds || [])].sort((a, b) => {
     const x = a[sort.key], y = b[sort.key];
     if (x == null) return y == null ? 0 : 1;
@@ -60,6 +66,16 @@ export default function EtfSecondaryPanel() {
       { name: '主动买卖净额', type: 'line', showSymbol: false, connectNulls: false, data: daily.map(d => d.net_amount), lineStyle: { color: '#60a5fa', width: 1.8 }, itemStyle: { color: '#60a5fa' } },
     ],
   };
+  const intradayPoints = intraday?.points || [];
+  const intradayOption = {
+    backgroundColor: 'transparent',
+    tooltip: { trigger: 'axis', backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#e2e8f0' }, valueFormatter: (v: Value) => v == null ? '数据缺失' : `${signed(v)} 亿` },
+    grid: { top: 26, bottom: intradayPoints.length > 30 ? 78 : 45, left: 78, right: 28 },
+    xAxis: { type: 'category', boundaryGap: false, data: intradayPoints.map(point => point.checked_at.slice(11, 16)), axisLabel: { color: '#94a3b8', hideOverlap: true }, axisLine: { lineStyle: { color: '#334155' } } },
+    yAxis: { type: 'value', name: '主力净额 / 亿元', scale: true, nameTextStyle: { color: '#94a3b8' }, axisLabel: { color: '#94a3b8' }, splitLine: { lineStyle: { color: '#1e293b' } } },
+    dataZoom: intradayPoints.length > 30 ? [{ type: 'inside' }, { type: 'slider', bottom: 16, height: 22, textStyle: { color: '#94a3b8' }, borderColor: '#334155' }] : [],
+    series: [{ name: '主力净额', type: 'line', data: intradayPoints.map(point => point.main), showSymbol: intradayPoints.length <= 12, symbolSize: 7, smooth: false, lineStyle: { color: '#60a5fa', width: 2 }, itemStyle: { color: '#60a5fa' }, areaStyle: { color: 'rgba(96,165,250,0.12)' }, markLine: { silent: true, symbol: 'none', lineStyle: { color: '#475569', type: 'dashed' }, data: [{ yAxis: 0 }] } }],
+  };
   return <section className={styles.panel}>
     <div className={styles.heading}><div><h2>二级市场资金流向</h2><p>今日快照与历史走势分开统计 · 固定宽基 ETF 样本</p></div><button className="button" onClick={() => { mutate(); refreshLive(); }} disabled={isValidating}>{isValidating ? '读取中…' : '刷新'}</button></div>
     <div className={styles.tabs}>{CATEGORIES.map(item => <button key={item} className={`button ${group === item ? 'active' : ''}`} onClick={() => setGroup(item)}>{item}</button>)}</div>
@@ -67,11 +83,12 @@ export default function EtfSecondaryPanel() {
       <div className={styles.liveHeading}><div><h3>今日二级市场快照 <span>东方财富 · {live?.date || '等待今日数据'}</span></h3><p className={styles.caption}>最近采集 {timeLabel(live?.checked_at)}；主力净额为大单与超大单净额之和，金额单位：亿元。</p></div><div className={styles.liveTotal}><span>{live?.summary.main == null && live?.summary.available_main != null ? '已获样本小计' : '今日主力净额'}</span><strong style={{ color: color(live?.summary.main ?? live?.summary.available_main) }}>{signed(live?.summary.main ?? live?.summary.available_main)} 亿</strong><small>{live?.summary.covered || 0} / {live?.summary.expected ?? 0} 只</small></div></div>
       {liveError && <p className={styles.notice}>今日快照接口暂不可用，正在重试。</p>}
       {live && live.summary.covered < live.summary.expected && <p className={styles.notice}>{live.summary.covered ? '今日部分 ETF 尚未返回数据，以上仅为已获样本小计，不是完整合计。' : '数据源尚未返回今日资金流向；历史数据在下方继续展示。'}不会把缺失值当作零。</p>}
-      {live && live.summary.covered > 0 && <div className={styles.table}><table className={styles.liveTable}><thead><tr><th>ETF / 跟踪指数</th><th>主力净额</th><th>超大单</th><th>大单</th><th>中单</th><th>小单</th><th>采集时间</th></tr></thead><tbody>{live.funds.map(fund => <tr key={fund.ts_code}><td><b>{fund.name}</b><small>{fund.ts_code} · {fund.group}</small></td>{(['main', 'super_large', 'large', 'medium', 'small'] as const).map(key => <td key={key} style={{ color: color(fund[key]) }}>{signed(fund[key])}</td>)}<td>{timeLabel(fund.checked_at)}</td></tr>)}</tbody></table></div>}
-      <p className={styles.caption}>当日数据可能延迟；与下方新浪历史数据的订单分类口径不同，不拼接计算。资金流向不能识别投资者身份，也不等于 ETF 净申购。</p>
+      {live && live.summary.covered > 0 && <div className={styles.table}><table className={styles.liveTable}><thead><tr><th>ETF / 跟踪指数</th><th>主力净额</th><th title="本次主力净额减去上次成功采集的主力净额；缺少上一轮时显示 —">5 分钟变化</th><th>超大单</th><th>大单</th><th>中单</th><th>小单</th><th>采集时间</th></tr></thead><tbody>{live.funds.map(fund => <tr key={fund.ts_code}><td><button className={styles.fundButton} onClick={() => setSelectedCode(fund.ts_code)} aria-label={`查看${fund.name}今日主力净流入曲线`}><b>{fund.name}</b><small>{fund.ts_code} · {fund.group} · 查看日内曲线 ›</small></button></td><td style={{ color: color(fund.main) }}>{signed(fund.main)}</td><td style={{ color: color(fund.change_5m) }} title={fund.previous_checked_at ? `上次成功采集：${timeLabel(fund.previous_checked_at)}` : '尚无上次成功采集记录'}>{signed(fund.change_5m)}</td>{(['super_large', 'large', 'medium', 'small'] as const).map(key => <td key={key} style={{ color: color(fund[key]) }}>{signed(fund[key])}</td>)}<td>{timeLabel(fund.checked_at)}</td></tr>)}</tbody></table></div>}
+      <p className={styles.caption}>5 分钟变化＝本次主力净额－上次成功采集值；若中间采集失败，实际间隔可能超过 5 分钟，悬停数值可查看对比时间。当日数据可能延迟；与下方新浪历史数据的订单分类口径不同，不拼接计算。资金流向不能识别投资者身份，也不等于 ETF 净申购。</p>
     </div>
     {error && <p className={styles.notice}>资金流向接口暂不可用，正在重试。{data ? '下方保留上次读取结果。' : ''}</p>}
     {isLoading && !data && <p className={styles.caption}>正在读取二级市场资金流向…</p>}
+    {selectedCode && <div className={styles.modalBackdrop} onMouseDown={() => setSelectedCode(null)}><div className={styles.modal} role="dialog" aria-modal="true" aria-label={`${selectedFund?.name || intraday?.name || selectedCode}今日主力净流入曲线`} onMouseDown={event => event.stopPropagation()}><div className={styles.modalHeading}><div><h3>{selectedFund?.name || intraday?.name || selectedCode} · 当日主力净流入</h3><p className={styles.caption}>{intraday?.trade_date || live?.date || '今日'} · 每次成功采集保留一个数据点 · 金额单位：亿元</p></div><button className={styles.modalClose} onClick={() => setSelectedCode(null)} aria-label="关闭日内曲线">×</button></div>{intradayError ? <p className={styles.notice}>日内曲线暂时无法读取，请稍后重试。</p> : intradayLoading && !intraday ? <p className={styles.caption}>正在读取日内采集记录…</p> : intradayPoints.length ? <><div className={styles.intradayChart}><ReactECharts option={intradayOption} style={{ height: '100%' }} notMerge /></div><p className={styles.caption}>已记录 {intradayPoints.length} 次；最近采集 {timeLabel(intradayPoints[intradayPoints.length - 1]?.checked_at)}。曲线显示的是当日累计主力净额的快照，不是每 5 分钟交易额。</p></> : <p className={styles.caption}>今日暂无成功采集记录，下一轮采集后自动显示。</p>}</div></div>}
     {data && summary && <>
       <div className={styles.stats}>
         {([['单日主力净额', summary.main], ['近5交易日主力', summary.flow_5], ['近20交易日主力', summary.flow_20]] as [string, Value][]).map(([label, value]) => <article key={label}><span>{label}</span><strong style={{ color: color(value) }}>{signed(value)}<small> 亿</small></strong><em>{value == null ? '数据尚未齐全' : '单笔成交额 ≥ 100 万元'}</em></article>)}

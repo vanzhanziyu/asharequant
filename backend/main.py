@@ -6,13 +6,13 @@ from contextlib import closing
 from math import sqrt
 from statistics import stdev
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import connect, init_db
 from etf_flow import init_flow_db, snapshot as etf_flow_snapshot
 from etf_secondary import init_secondary_db, snapshot as etf_secondary_snapshot
-from etf_secondary_live import init_live_db, live_snapshot as etf_secondary_live_snapshot
+from etf_secondary_live import init_live_db, live_snapshot as etf_secondary_live_snapshot, live_history as etf_secondary_live_history
 
 init_db()
 init_flow_db()
@@ -52,6 +52,14 @@ def broad_etf_secondary_flows(group: str = Query("全部", pattern="^(全部|沪
 @app.get("/api/broad-etf/secondary-live")
 def broad_etf_secondary_live(group: str = Query("全部", pattern="^(全部|沪深300|上证50|中证500|中证1000|中证A500|科创50|创业板)$")):
     return etf_secondary_live_snapshot(group)
+
+
+@app.get("/api/broad-etf/secondary-live/history")
+def broad_etf_secondary_live_history(ts_code: str = Query(...)):
+    try:
+        return etf_secondary_live_history(ts_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/margin")

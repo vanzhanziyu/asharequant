@@ -33,9 +33,20 @@ def init_live_db():
           main REAL, small REAL, medium REAL, large REAL, super_large REAL,
           checked_at TEXT NOT NULL,
           PRIMARY KEY(ts_code,trade_date));
+        CREATE TABLE IF NOT EXISTS broad_etf_secondary_live_history (
+          ts_code TEXT NOT NULL, trade_date TEXT NOT NULL, checked_at TEXT NOT NULL,
+          main REAL, small REAL, medium REAL, large REAL, super_large REAL,
+          PRIMARY KEY(ts_code,checked_at));
+        CREATE INDEX IF NOT EXISTS idx_broad_etf_secondary_live_history_day
+          ON broad_etf_secondary_live_history(ts_code,trade_date,checked_at);
         CREATE TABLE IF NOT EXISTS broad_etf_secondary_live_sync (
           ts_code TEXT PRIMARY KEY, checked_at TEXT, success_at TEXT, error TEXT);
         """)
+        # Retain the latest pre-upgrade value as the first available history point.
+        conn.execute("""INSERT OR IGNORE INTO broad_etf_secondary_live_history
+            (ts_code,trade_date,checked_at,main,small,medium,large,super_large)
+            SELECT ts_code,trade_date,checked_at,main,small,medium,large,super_large
+            FROM broad_etf_secondary_live""")
 
 
 def parse_live_payload(payload, code, today):
@@ -106,13 +117,24 @@ def live_snapshot(group="全部"):
     codes = [fund[0] for fund in selected]
     with closing(connect()) as conn:
         rows = {row["ts_code"]: dict(row) for row in conn.execute(
-            "SELECT * FROM broad_etf_secondary_live WHERE trade_date=?", (today,)) if row["ts_code"] in codes}
+            """SELECT l.*,
+              (SELECT h.main FROM broad_etf_secondary_live_history h
+               WHERE h.ts_code=l.ts_code AND h.trade_date=l.trade_date AND h.checked_at<l.checked_at
+               ORDER BY h.checked_at DESC LIMIT 1) AS previous_main,
+              (SELECT h.checked_at FROM broad_etf_secondary_live_history h
+               WHERE h.ts_code=l.ts_code AND h.trade_date=l.trade_date AND h.checked_at<l.checked_at
+               ORDER BY h.checked_at DESC LIMIT 1) AS previous_checked_at
+               FROM broad_etf_secondary_live l WHERE l.trade_date=?""", (today,)) if row["ts_code"] in codes}
         sync = [dict(row) for row in conn.execute("SELECT * FROM broad_etf_secondary_live_sync") if row["ts_code"] in codes]
     funds = []
     for code, name, category in selected:
         row = rows.get(code, {})
+        previous_main = row.get("previous_main")
         funds.append({"ts_code": code, "name": name, "group": category,
                       **{field: row.get(field) for field in FIELDS},
+                      "change_5m": round(row["main"] - previous_main, 4)
+                      if row.get("main") is not None and previous_main is not None else None,
+                      "previous_checked_at": row.get("previous_checked_at"),
                       "checked_at": row.get("checked_at")})
     values = [fund["main"] for fund in funds]
     available = [value for value in values if value is not None]
@@ -130,6 +152,18 @@ def live_snapshot(group="全部"):
             "checked_at": max((row["checked_at"] for row in rows.values()), default=None),
             "success_at": max((row["success_at"] for row in sync if row["success_at"]), default=None),
             "errors": [{"ts_code": row["ts_code"], "error": row["error"]} for row in sync if row["error"]]}
+
+
+def live_history(ts_code):
+    fund = next((fund for fund in FUNDS if fund[0] == ts_code), None)
+    if fund is None:
+        raise ValueError("ETF 不在固定样本中")
+    today = dt.datetime.now(SHANGHAI).date().isoformat()
+    with closing(connect()) as conn:
+        points = [dict(row) for row in conn.execute("""SELECT checked_at,main,small,medium,large,super_large
+            FROM broad_etf_secondary_live_history WHERE ts_code=? AND trade_date=?
+            ORDER BY checked_at""", (ts_code, today))]
+    return {"ts_code": ts_code, "name": fund[1], "trade_date": today, "points": points}
 
 
 def sync_live():
@@ -189,6 +223,12 @@ def sync_live():
                     response.raise_for_status()
                     row = parse_live_payload(response.json(), code, now.date())
                 with connect() as conn:
+                    conn.execute("""INSERT INTO broad_etf_secondary_live_history
+                        (ts_code,trade_date,checked_at,main,small,medium,large,super_large)
+                        VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(ts_code,checked_at) DO UPDATE SET
+                        main=excluded.main,small=excluded.small,medium=excluded.medium,
+                        large=excluded.large,super_large=excluded.super_large""",
+                        (code, row["trade_date"], stamp, *(row[field] for field in FIELDS)))
                     conn.execute("""INSERT INTO broad_etf_secondary_live
                         (ts_code,trade_date,main,small,medium,large,super_large,checked_at)
                         VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(ts_code,trade_date) DO UPDATE SET

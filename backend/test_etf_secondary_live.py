@@ -80,7 +80,69 @@ class LiveSecondaryTests(unittest.TestCase):
             result = live.live_snapshot()
             self.assertEqual(result["summary"]["covered"], 2)
             self.assertEqual(result["summary"]["main"], 6.0)
+            self.assertIsNone(result["funds"][0]["change_5m"])
+            self.assertEqual(len(live.live_history(codes[0])["points"]), 1)
             self.assertEqual(result["errors"], [])
+
+    def test_successive_collections_keep_history_and_show_change(self):
+        code = "510300.SH"
+        today = dt.date(2026, 11, 23)
+        first = dt.datetime.combine(today, dt.time(10, 30), live.SHANGHAI)
+
+        class FrozenDateTime(dt.datetime):
+            current = first
+
+            @classmethod
+            def now(cls, tz=None):
+                return cls.current.astimezone(tz) if tz else cls.current.replace(tzinfo=None)
+
+        first_response = MagicMock()
+        first_response.json.return_value = self.batch_payload((code,), today, first)
+        second_response = MagicMock()
+        second_response.json.return_value = self.batch_payload((code,), today, first + dt.timedelta(minutes=5))
+        second_response.json.return_value["data"]["diff"][0].update(
+            {"f62": 500000000, "f72": 400000000})
+        session = MagicMock()
+        session.__enter__.return_value = session
+        session.get.side_effect = [first_response, second_response]
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(database, "DB_PATH", Path(directory) / "test.db"), \
+             patch.object(live, "FUNDS", ((code, "沪深300ETF", "沪深300"),)), \
+             patch.object(live.dt, "datetime", FrozenDateTime), \
+             patch.dict(sys.modules, {"requests": SimpleNamespace(Session=lambda: session)}):
+            live.sync_live()
+            self.assertIsNone(live.live_snapshot()["funds"][0]["change_5m"])
+            FrozenDateTime.current = first + dt.timedelta(minutes=5)
+            live.sync_live()
+            result = live.live_snapshot()["funds"][0]
+            self.assertEqual(result["main"], 5.0)
+            self.assertEqual(result["change_5m"], 2.0)
+            self.assertEqual(result["previous_checked_at"], first.isoformat(timespec="seconds"))
+            history = live.live_history(code)
+            self.assertEqual([point["main"] for point in history["points"]], [3.0, 5.0])
+            self.assertEqual([point["checked_at"] for point in history["points"]],
+                             [first.isoformat(timespec="seconds"), FrozenDateTime.current.isoformat(timespec="seconds")])
+
+    def test_upgrade_backfills_latest_value_without_losing_it(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(database, "DB_PATH", Path(directory) / "test.db"):
+            with database.connect() as conn:
+                conn.execute("""CREATE TABLE broad_etf_secondary_live (
+                    ts_code TEXT NOT NULL, trade_date TEXT NOT NULL,
+                    main REAL, small REAL, medium REAL, large REAL, super_large REAL,
+                    checked_at TEXT NOT NULL, PRIMARY KEY(ts_code,trade_date))""")
+                conn.execute("INSERT INTO broad_etf_secondary_live VALUES (?,?,?,?,?,?,?,?)",
+                             ("510300.SH", "2026-11-23", 1.2, 0, 0, 0.5, 0.7,
+                              "2026-11-23T10:30:00+08:00"))
+            live.init_live_db()
+            live.init_live_db()
+            with database.connect() as conn:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM broad_etf_secondary_live_history").fetchone()[0], 1)
+                self.assertEqual(conn.execute("SELECT main FROM broad_etf_secondary_live").fetchone()[0], 1.2)
+
+    def test_history_rejects_unknown_etf(self):
+        with self.assertRaises(ValueError):
+            live.live_history("UNKNOWN")
 
     def test_reader_fallback_uses_fresh_validated_snapshot(self):
         today = dt.datetime.now(live.SHANGHAI).date()
