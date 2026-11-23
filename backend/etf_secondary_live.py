@@ -6,6 +6,7 @@ series. Keep them in a separate table and never append them to that series.
 from __future__ import annotations
 
 import datetime as dt
+import json
 from contextlib import closing
 from zoneinfo import ZoneInfo
 
@@ -17,6 +18,7 @@ BATCH_URLS = (
     "https://push2.eastmoney.com/api/qt/ulist.np/get",
     "https://91.push2.eastmoney.com/api/qt/ulist.np/get",
 )
+READER_URL = "https://r.jina.ai/" + BATCH_URLS[0]
 SOURCE = "东方财富"
 FIELDS = ("main", "small", "medium", "large", "super_large")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -62,7 +64,7 @@ def parse_live_payload(payload, code, today):
     return {"trade_date": date.isoformat(), **dict(zip(FIELDS, (v / 1e8 for v in values)))}
 
 
-def parse_batch_payload(payload, code, today):
+def parse_batch_payload(payload, code, today, now=None):
     """Read one ETF from a single batched Eastmoney quote response."""
     data = payload.get("data") if isinstance(payload, dict) else None
     rows = data.get("diff") if isinstance(data, dict) else None
@@ -76,11 +78,16 @@ def parse_batch_payload(payload, code, today):
         raise ValueError("批量资金流向缺少或重复 ETF 代码")
     row = matches[0]
     try:
-        quote_date = dt.datetime.fromtimestamp(int(row["f124"]), SHANGHAI).date()
+        quote_at = dt.datetime.fromtimestamp(int(row["f124"]), SHANGHAI)
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
         raise ValueError("批量资金流向时间戳无效") from exc
+    quote_date = quote_at.date()
     if quote_date != today:
         raise ValueError(f"批量资金流向停留在 {quote_date.isoformat()}")
+    if now is not None and dt.time(9, 30) <= now.time() <= dt.time(15, 0):
+        age = now - quote_at
+        if age > dt.timedelta(minutes=15) or age < -dt.timedelta(minutes=2):
+            raise ValueError("批量资金流向报价超过盘中时效限制")
     # Eastmoney f62/f66/f72/f78/f84: main/super-large/large/medium/small, in yuan.
     amounts = [finite(row.get(field)) for field in ("f62", "f66", "f72", "f78", "f84")]
     if any(value is None for value in amounts):
@@ -137,17 +144,25 @@ def sync_live():
         secids = ",".join(("1" if code.endswith(".SH") else "0") + "." + code.split(".")[0]
                           for code, _, _ in FUNDS)
         batch_payload, batch_error = None, None
-        for batch_url in BATCH_URLS:
+        for batch_url in (*BATCH_URLS, READER_URL):
             try:
                 response = session.get(batch_url, params={
                     "fltt": 2, "secids": secids,
                     "fields": "f12,f13,f62,f66,f72,f78,f84,f124",
-                }, timeout=(5, 10))
+                }, headers={"X-No-Cache": "true", "X-Engine": "curl"} if batch_url == READER_URL else None,
+                    timeout=(5, 25) if batch_url == READER_URL else (5, 10))
                 response.raise_for_status()
-                payload = response.json()
+                if batch_url == READER_URL:
+                    _, marker, body = response.text.partition("Markdown Content:\n")
+                    if not marker:
+                        raise ValueError("转发接口未返回资金流向内容")
+                    payload = json.loads(body.strip())
+                else:
+                    payload = response.json()
                 if not isinstance(payload, dict) or not isinstance((payload.get("data") or {}).get("diff"), list):
                     raise ValueError("批量接口返回格式错误")
                 batch_payload = payload
+                print(f"[今日二级资金] 批量快照来源：{'Jina Reader 转发东方财富' if batch_url == READER_URL else '东方财富直连'}", flush=True)
                 break
             except Exception as exc:
                 batch_error = f"{type(exc).__name__}: {str(exc)[:160]}"
@@ -160,7 +175,7 @@ def sync_live():
                 if batch_payload is None:
                     raise ValueError(f"批量接口不可用：{batch_error}")
                 try:
-                    row = parse_batch_payload(batch_payload, code, now.date())
+                    row = parse_batch_payload(batch_payload, code, now.date(), now)
                 except ValueError:
                     if direct_attempts >= MAX_DIRECT_FALLBACK:
                         raise

@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 import sys
 import tempfile
 import unittest
@@ -12,8 +13,8 @@ import etf_secondary_live as live
 
 class LiveSecondaryTests(unittest.TestCase):
     @staticmethod
-    def batch_payload(codes, day):
-        stamp = int(dt.datetime.combine(day, dt.time(10, 30), live.SHANGHAI).timestamp())
+    def batch_payload(codes, day, when=None):
+        stamp = int((when or dt.datetime.combine(day, dt.time(10, 30), live.SHANGHAI)).timestamp())
         return {"data": {"diff": [
             {"f12": code[:6], "f13": 1 if code.endswith(".SH") else 0,
              "f62": 300000000, "f66": 100000000, "f72": 200000000,
@@ -51,6 +52,9 @@ class LiveSecondaryTests(unittest.TestCase):
             self.assertEqual(row["large"] + row["super_large"], row["main"])
         with self.assertRaises(ValueError):
             live.parse_batch_payload(payload, "510300.SH", today + dt.timedelta(days=1))
+        with self.assertRaises(ValueError):
+            live.parse_batch_payload(payload, "510300.SH", today,
+                                     dt.datetime.combine(today, dt.time(11), live.SHANGHAI))
         payload["data"]["diff"][0]["f72"] = 1
         with self.assertRaises(ValueError):
             live.parse_batch_payload(payload, "510300.SH", today)
@@ -63,7 +67,7 @@ class LiveSecondaryTests(unittest.TestCase):
         today = dt.datetime.now(live.SHANGHAI).date()
         codes = ("510300.SH", "159919.SZ")
         response = MagicMock()
-        response.json.return_value = self.batch_payload(codes, today)
+        response.json.return_value = self.batch_payload(codes, today, dt.datetime.now(live.SHANGHAI))
         session = MagicMock()
         session.__enter__.return_value = session
         session.get.return_value = response
@@ -78,6 +82,23 @@ class LiveSecondaryTests(unittest.TestCase):
             self.assertEqual(result["summary"]["main"], 6.0)
             self.assertEqual(result["errors"], [])
 
+    def test_reader_fallback_uses_fresh_validated_snapshot(self):
+        today = dt.datetime.now(live.SHANGHAI).date()
+        codes = ("510300.SH", "159919.SZ")
+        response = MagicMock()
+        response.text = "Title:\n\nMarkdown Content:\n" + json.dumps(
+            self.batch_payload(codes, today, dt.datetime.now(live.SHANGHAI)))
+        session = MagicMock()
+        session.__enter__.return_value = session
+        session.get.side_effect = [RuntimeError("502"), RuntimeError("502"), response]
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(database, "DB_PATH", Path(directory) / "test.db"), \
+             patch.object(live, "FUNDS", tuple((code, code, "沪深300") for code in codes)), \
+             patch.dict(sys.modules, {"requests": SimpleNamespace(Session=lambda: session)}):
+            live.sync_live()
+            self.assertEqual(session.get.call_count, len(live.BATCH_URLS) + 1)
+            self.assertEqual(live.live_snapshot()["summary"]["covered"], 2)
+
     def test_batch_failure_does_not_flood_legacy_endpoint(self):
         session = MagicMock()
         session.__enter__.return_value = session
@@ -88,7 +109,7 @@ class LiveSecondaryTests(unittest.TestCase):
              patch.dict(sys.modules, {"requests": SimpleNamespace(Session=lambda: session)}):
             with self.assertRaises(RuntimeError):
                 live.sync_live()
-            self.assertEqual(session.get.call_count, len(live.BATCH_URLS))
+            self.assertEqual(session.get.call_count, len(live.BATCH_URLS) + 1)
             self.assertEqual(len(live.live_snapshot()["errors"]), 1)
 
     def test_partial_coverage_never_becomes_complete_total(self):
