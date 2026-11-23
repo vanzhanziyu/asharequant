@@ -13,9 +13,14 @@ from database import connect
 from etf_flow import FUNDS, complete_sum, finite
 
 URL = "https://push2.eastmoney.com/api/qt/stock/fflow/kline/get"
+BATCH_URLS = (
+    "https://push2.eastmoney.com/api/qt/ulist.np/get",
+    "https://91.push2.eastmoney.com/api/qt/ulist.np/get",
+)
 SOURCE = "东方财富"
 FIELDS = ("main", "small", "medium", "large", "super_large")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+MAX_DIRECT_FALLBACK = 3
 
 
 def init_live_db():
@@ -55,6 +60,37 @@ def parse_live_payload(payload, code, today):
     if abs(main - (large + super_large)) > max(100, abs(main) * 0.0001):
         raise ValueError("主力净额与大单分项不一致")
     return {"trade_date": date.isoformat(), **dict(zip(FIELDS, (v / 1e8 for v in values)))}
+
+
+def parse_batch_payload(payload, code, today):
+    """Read one ETF from a single batched Eastmoney quote response."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    rows = data.get("diff") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError("批量资金流向暂无记录")
+    number = code.split(".")[0]
+    market = 1 if code.endswith(".SH") else 0
+    matches = [row for row in rows if isinstance(row, dict) and str(row.get("f12")) == number
+               and row.get("f13") == market]
+    if len(matches) != 1:
+        raise ValueError("批量资金流向缺少或重复 ETF 代码")
+    row = matches[0]
+    try:
+        quote_date = dt.datetime.fromtimestamp(int(row["f124"]), SHANGHAI).date()
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("批量资金流向时间戳无效") from exc
+    if quote_date != today:
+        raise ValueError(f"批量资金流向停留在 {quote_date.isoformat()}")
+    # Eastmoney f62/f66/f72/f78/f84: main/super-large/large/medium/small, in yuan.
+    amounts = [finite(row.get(field)) for field in ("f62", "f66", "f72", "f78", "f84")]
+    if any(value is None for value in amounts):
+        raise ValueError("批量资金流向金额缺失")
+    main, super_large, large, medium, small = amounts
+    if abs(main - (super_large + large)) > max(100, abs(main) * 0.0001):
+        raise ValueError("批量主力净额与大单分项不一致")
+    return {"trade_date": quote_date.isoformat(), "main": main / 1e8,
+            "small": small / 1e8, "medium": medium / 1e8,
+            "large": large / 1e8, "super_large": super_large / 1e8}
 
 
 def live_snapshot(group="全部"):
@@ -98,17 +134,45 @@ def sync_live():
     successes = 0
     with requests.Session() as session:
         session.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
+        secids = ",".join(("1" if code.endswith(".SH") else "0") + "." + code.split(".")[0]
+                          for code, _, _ in FUNDS)
+        batch_payload, batch_error = None, None
+        for batch_url in BATCH_URLS:
+            try:
+                response = session.get(batch_url, params={
+                    "fltt": 2, "secids": secids,
+                    "fields": "f12,f13,f62,f66,f72,f78,f84,f124",
+                }, timeout=(5, 10))
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict) or not isinstance((payload.get("data") or {}).get("diff"), list):
+                    raise ValueError("批量接口返回格式错误")
+                batch_payload = payload
+                break
+            except Exception as exc:
+                batch_error = f"{type(exc).__name__}: {str(exc)[:160]}"
+        # A failed batch must not trigger another 12 rapid requests from this IP.
+        # Only fill a few missing symbols individually when the batch itself worked.
+        direct_attempts = 0
         for code, name, _ in FUNDS:
             error = None
             try:
-                response = session.get(URL, params={
-                    "lmt": 1, "klt": 101,
-                    "secid": ("1" if code.endswith(".SH") else "0") + "." + code.split(".")[0],
-                    "fields1": "f1,f2,f3,f7",
-                    "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63",
-                }, timeout=(8, 15))
-                response.raise_for_status()
-                row = parse_live_payload(response.json(), code, now.date())
+                if batch_payload is None:
+                    raise ValueError(f"批量接口不可用：{batch_error}")
+                try:
+                    row = parse_batch_payload(batch_payload, code, now.date())
+                except ValueError:
+                    if direct_attempts >= MAX_DIRECT_FALLBACK:
+                        raise
+                    direct_attempts += 1
+                    response = session.get(URL, params={
+                        "lmt": 1, "klt": 101,
+                        "secid": ("1" if code.endswith(".SH") else "0") + "." + code.split(".")[0],
+                        "fields1": "f1,f2,f3,f7",
+                        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63",
+                    }, timeout=(5, 10))
+                    response.raise_for_status()
+                    row = parse_live_payload(response.json(), code, now.date())
                 with connect() as conn:
                     conn.execute("""INSERT INTO broad_etf_secondary_live
                         (ts_code,trade_date,main,small,medium,large,super_large,checked_at)

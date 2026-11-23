@@ -1,14 +1,25 @@
 import datetime as dt
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import database
 import etf_secondary_live as live
 
 
 class LiveSecondaryTests(unittest.TestCase):
+    @staticmethod
+    def batch_payload(codes, day):
+        stamp = int(dt.datetime.combine(day, dt.time(10, 30), live.SHANGHAI).timestamp())
+        return {"data": {"diff": [
+            {"f12": code[:6], "f13": 1 if code.endswith(".SH") else 0,
+             "f62": 300000000, "f66": 100000000, "f72": 200000000,
+             "f78": -100000000, "f84": -200000000, "f124": stamp}
+            for code in codes]}}
+
     def test_parses_same_day_shanghai_and_shenzhen_in_yi(self):
         for code, market in (("510300.SH", 1), ("159919.SZ", 0)):
             payload = {"data": {"code": code[:6], "market": market,
@@ -29,6 +40,56 @@ class LiveSecondaryTests(unittest.TestCase):
         base["data"]["klines"] = ["2026-11-19,abc,0,0,0,0"]
         with self.assertRaises(ValueError):
             live.parse_live_payload(base, "159919.SZ", dt.date(2026, 11, 19))
+
+    def test_batch_parses_same_day_and_rejects_bad_quotes(self):
+        today = dt.date(2026, 11, 23)
+        payload = self.batch_payload(("510300.SH", "159919.SZ"), today)
+        for code in ("510300.SH", "159919.SZ"):
+            row = live.parse_batch_payload(payload, code, today)
+            self.assertEqual(row["trade_date"], today.isoformat())
+            self.assertEqual(row["main"], 3.0)
+            self.assertEqual(row["large"] + row["super_large"], row["main"])
+        with self.assertRaises(ValueError):
+            live.parse_batch_payload(payload, "510300.SH", today + dt.timedelta(days=1))
+        payload["data"]["diff"][0]["f72"] = 1
+        with self.assertRaises(ValueError):
+            live.parse_batch_payload(payload, "510300.SH", today)
+        payload["data"]["diff"][0]["f72"] = 200000000
+        payload["data"]["diff"][0]["f13"] = 0
+        with self.assertRaises(ValueError):
+            live.parse_batch_payload(payload, "510300.SH", today)
+
+    def test_batch_sync_uses_one_request_for_all_funds(self):
+        today = dt.datetime.now(live.SHANGHAI).date()
+        codes = ("510300.SH", "159919.SZ")
+        response = MagicMock()
+        response.json.return_value = self.batch_payload(codes, today)
+        session = MagicMock()
+        session.__enter__.return_value = session
+        session.get.return_value = response
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(database, "DB_PATH", Path(directory) / "test.db"), \
+             patch.object(live, "FUNDS", tuple((code, code, "沪深300") for code in codes)), \
+             patch.dict(sys.modules, {"requests": SimpleNamespace(Session=lambda: session)}):
+            live.sync_live()
+            self.assertEqual(session.get.call_count, 1)
+            result = live.live_snapshot()
+            self.assertEqual(result["summary"]["covered"], 2)
+            self.assertEqual(result["summary"]["main"], 6.0)
+            self.assertEqual(result["errors"], [])
+
+    def test_batch_failure_does_not_flood_legacy_endpoint(self):
+        session = MagicMock()
+        session.__enter__.return_value = session
+        session.get.side_effect = RuntimeError("502")
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(database, "DB_PATH", Path(directory) / "test.db"), \
+             patch.object(live, "FUNDS", (("510300.SH", "甲", "沪深300"),)), \
+             patch.dict(sys.modules, {"requests": SimpleNamespace(Session=lambda: session)}):
+            with self.assertRaises(RuntimeError):
+                live.sync_live()
+            self.assertEqual(session.get.call_count, len(live.BATCH_URLS))
+            self.assertEqual(len(live.live_snapshot()["errors"]), 1)
 
     def test_partial_coverage_never_becomes_complete_total(self):
         with tempfile.TemporaryDirectory() as directory, \
